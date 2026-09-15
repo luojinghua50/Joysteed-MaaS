@@ -1,0 +1,31 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+/bin/
+/dist/
+
+# Test and coverage artifacts
+*.test
+*.out
+coverage.*
+
+# Go workspace files: local module resolution, machine-specific
+go.work
+go.work.sum
+
+# Local credentials. The deploy scripts take passwords from env vars or files
+# passed on the command line -- none of it belongs in the repo.
+.env
+.env.*
+!.env.example
+*.pw
+*_password.txt
+*.pem
+*.key
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store

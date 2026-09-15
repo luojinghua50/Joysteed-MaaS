@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MaaS Control Plane</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="login-view" class="auth-shell">
+    <div class="auth-panel">
+      <div class="brand-mark">M</div>
+      <p class="eyebrow">CONTROL PLANE</p>
+      <h1>MaaS 管理后台</h1>
+      <p class="muted">租户、用量与平台运行状态</p>
+      <form id="login-form">
+        <label>管理员账号<input id="username" name="username" value="admin" autocomplete="username" required></label>
+        <label>管理员密码<input id="password" name="password" type="password" value="change-me" autocomplete="current-password" required></label>
+        <button class="primary" type="submit">登录控制台</button>
+        <p id="login-error" class="error" role="alert"></p>
+      </form>
+    </div>
+  </div>
+
+  <div id="app-view" class="app-shell hidden">
+    <header class="topbar">
+      <div class="topbar-brand"><span class="brand-mark small">M</span><span>MaaS <b>Control Plane</b></span></div>
+      <div class="topbar-actions"><span id="identity" class="identity"></span><button id="logout" class="ghost">退出</button></div>
+    </header>
+    <main class="content">
+      <section class="page-heading"><div><p class="eyebrow">OPERATIONS</p><h1>平台概览</h1><p class="muted">控制面服务已连接，数据来自 Postgres。</p></div><span id="api-status" class="status-pill">检查中</span></section>
+      <section class="stats-grid">
+        <article class="stat-card"><span class="stat-label">租户</span><strong id="stat-tenants">--</strong><span class="stat-note">已注册租户</span></article>
+        <article class="stat-card"><span class="stat-label">审计事件</span><strong id="stat-audits">--</strong><span class="stat-note">控制面记录</span></article>
+        <article class="stat-card"><span class="stat-label">用量事件</span><strong id="stat-usage">--</strong><span class="stat-note">计量流水</span></article>
+        <article class="stat-card accent"><span class="stat-label">Redis</span><strong id="stat-redis">--</strong><span class="stat-note">共享状态服务</span></article>
+      </section>
+      <section class="workspace-grid">
+        <article class="panel tenants-panel">
+          <div class="panel-heading"><div><p class="eyebrow">TENANT REGISTRY</p><h2>租户目录</h2></div><button id="refresh" class="icon-button" title="刷新">↻</button></div>
+          <form id="tenant-form" class="inline-form"><input id="tenant-id" placeholder="租户 ID" required><input id="tenant-slug" placeholder="slug" required><input id="tenant-name" placeholder="名称"><button class="primary" type="submit">创建租户</button></form>
+          <p id="tenant-error" class="error" role="alert"></p>
+          <div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>状态</th><th>创建时间</th></tr></thead><tbody id="tenant-rows"></tbody></table></div>
+        </article>
+        <article class="panel audit-panel"><div class="panel-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h2>最近审计</h2></div></div><div id="audit-list" class="audit-list"></div></article>
+      </section>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

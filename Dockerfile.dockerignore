@@ -1,0 +1,8 @@
+.git
+.DS_Store
+docs
+deploy
+maas-ui
+plugins
+**/*_test.go
+**/*.log
