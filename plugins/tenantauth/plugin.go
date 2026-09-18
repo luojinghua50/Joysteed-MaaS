@@ -29,12 +29,6 @@ var (
 	ErrTenantCannotServe = auth.ErrTenantCannotServe
 )
 
-type verifiedKey struct{}
-type identity struct {
-	tenant tenant.ID
-	value  string
-}
-
 var _ schemas.HTTPTransportPlugin = (*Plugin)(nil)
 
 func New(resolver Resolver) (*Plugin, error) {
@@ -53,6 +47,29 @@ func (p *Plugin) HTTPTransportPreAuthHook(ctx *schemas.BifrostContext, req *sche
 	if req != nil && nonDataPlanePath(req.Path) {
 		return nil, nil
 	}
+	return p.resolveAndBind(ctx, req)
+}
+
+func nonDataPlanePath(path string) bool {
+	return strings.HasPrefix(path, "/api/") || path == "/api" ||
+		strings.HasPrefix(path, "/oauth2/") || path == "/oauth2" ||
+		path == "/health" || path == "/ready" || path == "/metrics" || path == "/"
+}
+
+func (p *Plugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	if req != nil && nonDataPlanePath(req.Path) {
+		return nil, nil
+	}
+	return p.resolveAndBind(ctx, req)
+}
+
+// Bifrost's pre-auth and pre-hook middleware create separate BifrostContext
+// values. The fasthttp request carries user values between them, but a newly
+// created BifrostContext deliberately does not read through that recyclable
+// parent. Resolve again at the authenticated phase so tenant identity is based
+// on the credential that will actually reach governance and survives into the
+// request handler's shared context.
+func (p *Plugin) resolveAndBind(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	value, valid := credential(req)
 	if ctx == nil || !valid {
 		return denied(401, "invalid_virtual_key"), nil
@@ -70,33 +87,9 @@ func (p *Plugin) HTTPTransportPreAuthHook(ctx *schemas.BifrostContext, req *sche
 	if err := tenant.SetResolvedTenant(ctx, id); err != nil {
 		return denied(403, "tenant_identity_conflict"), nil
 	}
-	ctx.SetValue(verifiedKey{}, identity{tenant: id, value: value})
 	// Governance remains authoritative for provider/model/resource permissions.
 	// Set only its public credential key, never its reserved identity keys.
 	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, value)
-	return nil, nil
-}
-
-func nonDataPlanePath(path string) bool {
-	return strings.HasPrefix(path, "/api/") || path == "/api" ||
-		strings.HasPrefix(path, "/oauth2/") || path == "/oauth2" ||
-		path == "/health" || path == "/ready" || path == "/metrics" || path == "/"
-}
-
-func (*Plugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
-	if req != nil && nonDataPlanePath(req.Path) {
-		return nil, nil
-	}
-	if ctx == nil {
-		return denied(401, "invalid_virtual_key"), nil
-	}
-	verified, ok := ctx.Value(verifiedKey{}).(identity)
-	value, valid := credential(req)
-	// Catch credential/identity rewrites between the pre-auth and pre phases.
-	if !ok || !valid || value != verified.value || tenant.FromContext(ctx) != verified.tenant ||
-		ctx.Value(schemas.BifrostContextKeyVirtualKey) != verified.value {
-		return denied(401, "invalid_virtual_key"), nil
-	}
 	return nil, nil
 }
 

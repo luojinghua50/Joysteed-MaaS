@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/luojinghua50/Joysteed-MaaS/internal/rediskv"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/kvstore"
@@ -212,6 +213,68 @@ func TestConformance_ZeroTTLMeansNoExpiration(t *testing.T) {
 			time.Sleep(200 * time.Millisecond)
 			_, err := store.Get("forever")
 			require.NoError(t, err, "ttl=0 must not expire")
+		})
+	}
+}
+
+type atomicGetAndDeleter interface {
+	GetAndDelete(string) (any, error)
+}
+
+func TestConformance_GetAndDeleteIsAtomicAndOneShot(t *testing.T) {
+	for name, store := range implementations(t) {
+		t.Run(name, func(t *testing.T) {
+			extended, ok := store.(atomicGetAndDeleter)
+			require.True(t, ok, "%T must support the HTTP transport GetAndDelete contract", store)
+			if !ok {
+				return
+			}
+
+			require.NoError(t, store.SetWithTTL("consume-once", "value", time.Minute))
+			raw, err := extended.GetAndDelete("consume-once")
+			require.NoError(t, err)
+			got, decoded := decodeString(raw)
+			require.True(t, decoded)
+			require.Equal(t, "value", got)
+
+			_, err = extended.GetAndDelete("consume-once")
+			require.ErrorIs(t, err, kvstore.ErrNotFound)
+		})
+	}
+}
+
+type decoderRegistrar interface {
+	RegisterDecoder(string, kvstore.TypeDecoder)
+}
+
+func TestConformance_RegisteredDecoderRestoresTransportTypes(t *testing.T) {
+	type uploadSession struct {
+		Provider string `json:"provider"`
+		KeyID    string `json:"key_id"`
+	}
+
+	for name, store := range implementations(t) {
+		t.Run(name, func(t *testing.T) {
+			registrar, ok := store.(decoderRegistrar)
+			require.True(t, ok, "%T must support the HTTP transport decoder contract", store)
+			if !ok {
+				return
+			}
+			consumer, ok := store.(atomicGetAndDeleter)
+			require.True(t, ok, "%T must support typed consume-once reads", store)
+			if !ok {
+				return
+			}
+			registrar.RegisterDecoder("typed:", func(data []byte) (any, error) {
+				var value uploadSession
+				return &value, sonic.Unmarshal(data, &value)
+			})
+
+			want := &uploadSession{Provider: "gemini", KeyID: "key-7"}
+			require.NoError(t, store.SetWithTTL("typed:upload", want, time.Minute))
+			got, err := consumer.GetAndDelete("typed:upload")
+			require.NoError(t, err)
+			require.Equal(t, want, got)
 		})
 	}
 }

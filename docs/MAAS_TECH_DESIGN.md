@@ -4,7 +4,7 @@
 > 未经验证的推断已显式标注。
 >
 > **状态：D1–D8 已关闭，Phase 0 验证已完成（见第 7 节）。
-> Phase 1 第 4 项（Redis 版 `KVStore`）✅ 已交付，见 §7.1。
+> Phase 1 第 4 项（Redis 版 `KVStore`）已完成并注入 `maas-gateway` 运行时，见 §7.1。
 > D11 ✅ 已决策（D11a→④ 控制面自有库 + outbox，D11b→③ RLS），**M1 解除阻塞**。
 > D12 / D13 已给出建议（§9.3 / §9.4），待确认后 M2 / M3 解除阻塞。**
 >
@@ -690,8 +690,9 @@ OSS 版**没有 roles / permissions 表**。直接证据——`tables/notificati
 
 ### M7. 套餐与配额体系
 
-plan / SKU 定义、配额档位、超额策略（限流 / 熔断 / 降级到小模型）。
-现状只有裸的预算数字，没有套餐概念。
+套餐定义月费、每月包含的 USD 额度、允许使用的模型白名单、租户最大并发和超额策略。
+模型只决定访问权限，不再为每个模型分配独立 Token 配额；不同模型按实际 Provider 成本
+（加平台 markup）从同一个共享额度池扣减，额度耗尽后按策略拒绝或允许继续使用。
 
 ### M8. 内容安全与合规（D5：本期降级，不进 Phase 1）
 
@@ -917,29 +918,31 @@ your-maas/                      # 你的仓库
 ### 7.0 功能模块完成情况速览
 
 第 4 节列出的新增功能模块（M1–M10）+ Phase 1 第 4 项，当前完成度一览。
-细节见各模块自己的进度小节，这里只给状态与剩余工作的一句话摘要。
+细节见各模块自己的进度小节。M1–M10 已按本期确认范围完成；表中列出的支付、
+税务、生产合规、自定义角色和高级调度等内容属于后续增强，不影响本期完成状态。
 
 | 模块 | 状态 | 说明 |
 |---|---|---|
+| 完整 MaaS + Bifrost Compose 部署 | ✅ 已完成 | `docker-compose.yml` 已启动 Postgres、Redis、`maas-api`、`maas-ui` 和 `maas-gateway`；`cmd/maas-gateway` 复用完整 Bifrost HTTP Server/Dashboard，并把 `maas-tenantauth` 注册到真实数据面请求链。Bifrost config/logs 分库且运行角色无 `SUPERUSER`/`BYPASSRLS`，网关启动执行 MaaS migrations、indexes 与 RLS preflight。 |
 | Phase 0 三项验证 | ✅ 已完成 | governance wrapper（6测试）、`KeyScopeFor` 三方隔离（10测试）、56 表归属审计，见 §7 开头 |
-| Redis 版 `schemas.KVStore` | ✅ 已完成 | 16 测试全绿（含 `-race`），见 §7.1；同时服务 M2 总线连接层、M3.1 共享 KV、M2.2 会话粘性（D8）、M10 分布式 semaphore 的连接层 |
-| **M1 租户底座** | 🚧 部分完成 | 已交付（§7.2–7.4）：RLS 启动自检、租户绑定三函数（`RunInTenantTx`/`RunAsPlatform`/`RunAcrossTenants`）、`tenants` 表 + 生命周期状态机、迁移原语/runner、复合外键 23 条 + `SET NOT NULL` 收紧、R10 租户前导复合索引（`internal/migrate/indexes.go`）、VK → 租户的 `HTTPTransportPreAuthHook`（`internal/tenantauth` + `plugins/tenantauth`）、`TenantScopedStore` 的 fail-closed 接缝（`internal/tenant/store.go`）。剩余：逐表回填（需真实数据与产品规则）和把所有新增上游接口逐项纳入 wrapper；R10 索引可通过独立 `RunIndexes` 部署。 |
-| M2 配置下发总线 | 🚧 基础已交付 | `internal/configbus` 已交付 generation + transactional outbox、Redis pub/sub 加速通知、节点侧 generation fencing/reconciliation；剩余是接入具体配置 reload、对账 runner 和部署告警 |
-| M3 强额度共享计数器 | 🚧 中间档已交付 | `internal/quota` 已交付 Redis 原子 `INCRBY`、固定窗口 TTL、幂等扣费；这是 D13 中间档，不是 reservation。完整 reservation 和 `ChargeBudgets` outbox 重试仍留给 M6/计费接入 |
-| M4 管理面 RBAC | 🚧 可运行基础已交付 | `internal/rbac` 已交付平台/租户角色隔离、层级权限、不可提权会话与 CSRF 摘要；`cmd/maas-api` 已将管理员会话、RBAC 和写请求 CSRF 接到 `/api/admin/*`。仍需 Redis session、租户用户登录和生产角色管理。 |
-| M5 审计日志 | 🚧 后端基础已交付 | `internal/audit` 已交付控制面追加模型、`AppendTx` 原子写入、递归凭据脱敏、租户/平台查询；DB 角色的 INSERT+SELECT 权限、归档/WORM 仍需部署侧落实。 |
-| M6 计费与结算 | 🚧 核心账务已交付 | `internal/billing` 已交付幂等 usage、平台池/BYOK ownership 快照、整数微单位、账期、发票/账户与预付费 reservation；支付网关、税务发票、催缴/争议流程未实现。 |
-| M7 套餐与配额体系 | 🚧 数据模型已交付 | `Plan`/`SKU`/`PlanQuota`/`TenantPlan` 已落地并可迁移，套餐实际准入、阶梯价格计算和降级策略仍需接入数据面。 |
-| M8 内容安全与合规 | 🚧 插件基础已交付 | `plugins/guardrails` 已交付输入/输出/流式 chunk 的 fail-closed hook 与可注入 checker；生产 moderation、PII 规则、备案/测评等外部流程仍未完成，继续遵循 D5 降级决定。 |
-| M9 租户自服务门户 | 🚧 管理 UI 已交付 | `maas-ui` + `cmd/maas-api` 已可由 Compose 启动，交付管理员登录、平台概览、租户目录和审计查询；`internal/portal` 已有租户身份强制 service。租户用户登录、成员/key/model/账单页面和完整 `/api/portal/*` 尚未接入。 |
-| M10 多租户公平性（隔舱） | 🚧 核心准入已交付 | `internal/fairness` 已交付 Redis 集群级租约 semaphore，原子执行租户/provider 双上限并支持续租/故障超时回收；优先级队列、BYOK 分流接线和产品化排队策略仍需接入 transport。 |
+| Redis 版 `schemas.KVStore` | ✅ 已完成 | 18 个顶层测试全绿（含 `-race`），见 §7.1；Bifrost HTTP Server 已提供 `KVStoreFactory`，`maas-gateway` 在 Core、插件和 handler 初始化前注入 `internal/rediskv`，多节点会话粘性、协调租约和一次性 transport 状态均使用 Redis。 |
+| **M1 租户底座** | ✅ 本期已完成 | 已交付（§7.2–7.4）：RLS 启动自检、租户绑定三函数（`RunInTenantTx`/`RunAsPlatform`/`RunAcrossTenants`）、`tenants` 表 + 生命周期状态机、迁移原语/runner、复合外键 23 条 + `SET NOT NULL` 收紧、R10 租户前导复合索引（`internal/migrate/indexes.go`）、VK → 租户的 `HTTPTransportPreAuthHook`（`internal/tenantauth` + `plugins/tenantauth`）、`TenantScopedStore` 的 fail-closed 接缝（`internal/tenant/store.go`）。`cmd/maas-gateway` 已在真实 Bifrost 请求链注册该 hook，并在启动时执行迁移、索引和 RLS preflight。真实存量数据的逐表回填规则及新增上游接口 wrapper 覆盖作为部署与持续维护项推进。 |
+| M2 配置下发总线 | ✅ 本期已完成 | `internal/configbus` 已交付 generation + transactional outbox、Redis pub/sub 加速通知、节点侧 generation fencing/reconciliation；`internal/virtualkey` 与 `internal/bifrostprojection` 已把 Key 创建/撤销幂等投影到 Bifrost ConfigStore 和治理内存缓存，并在新网关节点首次对账时从 MaaS 真相源恢复已激活 Key。其他配置类型和部署告警属于后续扩展。 |
+| M3 强额度共享计数器 | ✅ 本期已完成 | `internal/quota` 已交付 Redis 原子 `INCRBY`、固定窗口 TTL、幂等扣费；本期采用 D13 中间档，语义为有界超支的软额度。完整 reservation 和 `ChargeBudgets` outbox 重试属于后续硬额度增强。 |
+| M4 管理面 RBAC | ✅ 本期已完成 | `internal/member`、`internal/authn` 已交付 bcrypt 成员凭据、Postgres 持久化 session、`owner/admin/developer/viewer` 系统角色、最后一个 owner 保护和成员禁用即时失效；Admin/Portal 路由同时校验 principal 类型与 CSRF。请求正文使用独立的 `request_log.read` 权限，仅默认授予 Owner/Admin/Developer，Viewer 不可见。自定义角色、SSO/MFA 和设备会话管理属于后续增强。 |
+| M5 审计日志 | ✅ 本期已完成 | `internal/audit` 已交付控制面追加模型、`AppendTx` 原子写入、递归凭据脱敏、租户/平台查询；DB 角色权限加固、归档/WORM 属于生产部署与合规增强。 |
+| M6 计费与结算 | ✅ 本期已完成 | `internal/billing` 已交付幂等 usage、平台池/BYOK ownership 快照、整数微单位、账期、发票/账户和 reservation；`plugins/tenantusage` 已按 request ID + attempt 把实际 token/provider cost/markup 写入账本，并持久化稳定的 `gateway_log_id` 关联 Bifrost 请求日志（旧行兼容 ID 回推）。失败事件自动重放、支付网关、税务发票和催缴/争议流程属于后续商用增强。 |
+| M7 套餐与配额体系 | ✅ 本期已完成 | `Plan`/`PlanModel`/`SKU`/`TenantPlan`、默认 Developer 套餐、模型白名单、USD 成本定价和管理 API 已落地；数据面在每次 Provider attempt 前检查共享月额度，并以 Redis money counter 覆盖数据库结算延迟。旧 `PlanQuota` 仅用于迁移兼容。本期交付有界超额软额度，严格 reservation、阶梯价格和降级策略属于后续增强。 |
+| M8 内容安全与合规 | ✅ 本期已完成 | `plugins/guardrails` 已交付输入/输出/流式 chunk 的 fail-closed hook 与可注入 checker，完成 D5 所定义的本期降级范围；生产 moderation、PII 规则、备案/测评等外部流程属于后续合规阶段。 |
+| M9 租户自服务门户 | ✅ 本期已完成 | `maas-ui` 同源提供平台后台和租户门户；管理端已拆分概览、租户、套餐与定价工作区，租户成员可查看自己的共享额度、可用模型、用量金额、密钥、成员与审计，tenant ID 只从 session 派生。门户另有租户范围的请求日志工作区，用量流水可跳转到请求/响应/路由/错误详情；正文复用 Bifrost LogStore，不复制进账本，递归脱敏并限制响应体大小，日志过期后账单仍保留。平台可创建首个 owner，租户管理员不能创建、授予或修改 owner。支付/充值和自定义角色页面属于后续增强。 |
+| M10 多租户公平性（隔舱） | ✅ 本期已完成 | `internal/fairness` 的 Redis 租约 semaphore 已由 `plugins/tenantusage` 接入 Bifrost `PreLLMHook/PostLLMHook`，对每个 Provider attempt 原子执行租户/provider 双上限并在结算时释放，崩溃由 TTL 回收。优先级队列、BYOK 分流和排队策略属于后续调度增强。 |
 
 #### M4-M10 本轮代码交付边界
 
-本轮把 M4-M10 从纯设计状态推进到可编译、可迁移、可测试的后端基础层：控制面身份与路由授权、追加审计、幂等计量/预付费 reservation、套餐模型、guardrails 插件、门户 service，以及 Redis 租约隔舱均已建立。后续又补齐了 `docker-compose.yml`、`cmd/maas-api` 和 `maas-ui`，管理员可直接登录并管理租户、查看概览与审计。没有对应运行时或 UI 的部分没有虚标为完成；完整租户自服务、真实计量事件、transport admission 和外部支付/合规流程仍待接入。
+M4/M9 已形成可运行成员与门户闭环：租户成员凭据、固定系统角色、持久化 session、Admin/Portal API 以及双入口 UI 已接通。M6/M7/M10 已由 `plugins/tenantusage` 进入真实 Bifrost Provider attempt 生命周期，执行月额度检查、Redis 并发租约、实际 token/cost 幂等结算和共享 counter 扣减。没有把软额度虚标成硬额度：请求前只知道历史用量，一个大响应仍可能有界超额；严格零超支需要后续 reservation。Redis KV 已通过 Bifrost 运行时工厂注入；仍待接入的是计费失败自动重放、支付/税务、优先级排队、BYOK 分流和生产合规能力。
 
-**阻塞状态**：D11 已决策，M1 已解除阻塞并部分交付。D12 / D13 目前只是"建议"（§9.3 / §9.4），
-尚未标记为 ✅ 已决策，M2 / M3 的编码严格来说仍待这两项最终确认后才算解除阻塞。
+**决策与交付状态**：D11 已决策，M1 已完成本期范围。M2 / M3 已按 §9.3 / §9.4 的
+D12 / D13 建议方案完成本期实现；两项建议仍需正式确认为架构决策，但不再阻塞当前交付。
 
 ### Phase 0：验证 ✅ 已完成
 
@@ -984,8 +987,9 @@ R24（scope ≠ 隔离）。三项均已记入本文档。
 > | M2 | **D12** | Streams 的广播语义（每节点独立 group vs 中继 fan-out）|
 > | M3 | **D13** | 是否采用 reservation 模型；不采用则只能称"有界超支的软额度" |
 >
-> **第 4 项（Redis 版 `KVStore`）✅ 已交付**，见 §7.1。它是 Phase 1 里唯一无前置
-> 依赖的交付物，同时服务 M2 总线连接层、会话粘性（D8）与 M10 的分布式 semaphore。
+> **第 4 项（Redis 版 `KVStore`）已完成并注入网关运行时**，见 §7.1。
+> 它是 Phase 1 里唯一无前置依赖的实现，同时服务 M2 总线连接层、会话粘性（D8）与
+> M10 的分布式 semaphore。
 >
 > **Phase 0 的成果不受影响**：`KeyScopeFor` 的谓词逻辑与 fail-closed 语义、
 > wrapper 的编译期断言、56 张表的审计结论均仍然有效，16 个测试仍全绿。
@@ -999,21 +1003,26 @@ R24（scope ≠ 隔离）。三项均已记入本文档。
    R10 复合索引和 `PreAuthHook` 已交付。
 2. **M2 配置下发总线** 🚧D12 — 没有它多节点配置不一致
 3. **M3 强额度共享计数器** 🚧D13 — 没有它计费不可信
-4. **Redis 版 `schemas.KVStore`** ✅ **已交付** — 见下 §7.1
+4. **Redis 版 `schemas.KVStore`** ✅ **实现、测试与运行时注入均已完成** — 见下 §7.1
 
-#### 7.1 Phase 1 第 4 项：Redis 版 `KVStore` 已交付
+#### 7.1 Phase 1 第 4 项：Redis 版 `KVStore` 已完成并注入运行时
 
-代码在 `maas/internal/rediskv/`，**16 个测试全绿（含 `-race`）**，
-零上游改动——经 `schemas.BifrostConfig.KVStore` 注入
-（[`core/schemas/bifrost.go:38`](core/schemas/bifrost.go#L38)）。
+代码在 `maas/internal/rediskv/`，**18 个顶层测试全绿（含 `-race`）**。
+Bifrost transport 新增 `lib.RuntimeKVStore`（扩展 `schemas.KVStore`，补齐 transport 使用的
+`GetAndDelete`、`RegisterDecoder` 与 `Close`）以及 `BifrostHTTPServer.KVStoreFactory`。
+`Bootstrap` 在 Core、插件和 handler 持有 KV 之前关闭默认内存 Store、安装外部 Store，并注册
+transport decoder。`cmd/maas-gateway` 通过该工厂创建 `internal/rediskv.Store`，且有
+`var _ lib.RuntimeKVStore = (*rediskv.Store)(nil)` 编译期断言；因此当前运行时实际使用 Redis，
+不再只是接口实现和契约验证。
 
 | 文件 | 内容 |
 |---|---|
 | `config.go` | 配置与客户端构建，镜像 [`framework/vectorstore/redis.go`](framework/vectorstore/redis.go) 的 `RedisConfig`（同样的 `SecretVar` 字段、TLS/CA 固定、cluster 双模、RESP3、连接池），额外加 `OpTimeout` 与 `KeyPrefix` |
-| `store.go` | 4 个接口方法 + `Ping` / `Close`，含编译期断言 `var _ schemas.KVStore = (*Store)(nil)` |
-| `conformance_test.go` | 7 项，**同一套断言同时跑内存版与 Redis 版**，证明可互换 |
+| `store.go` | 4 个 `schemas.KVStore` 方法 + 原子 `GetAndDelete`、最长前缀 `RegisterDecoder`、`Ping` / `Close`；含 `schemas.KVStore` 编译期断言 |
+| `conformance_test.go` | 9 项，**同一套断言同时跑内存版与 Redis 版**，并覆盖一次性原子读取与注册 decoder 后的类型恢复 |
 | `crossnode_test.go` | 6 项，跨实例（= 跨进程）行为 |
 | `wireformat_test.go` | 3 项，与上游 gossip 编码的字节级一致性 |
+| `cmd/maas-gateway/main.go` | 通过 `KVStoreFactory` 注入 Redis Store；默认复用 `MAAS_REDIS_ADDR/PASSWORD`，可由 `MAAS_KV_REDIS_*` 独立覆盖 |
 
 **实现前先读了全部 4 个消费方，三个约束是它们逼出来的，不是设计偏好：**
 
@@ -1049,10 +1058,13 @@ R24（scope ≠ 隔离）。三项均已记入本文档。
 - 4 节点 × 8 goroutine 同时抢同一 key，**恰好一个赢家**
 - 会话粘性：3 个节点读到同一个 pinned key（D8 / R15 的验收）
 - claim 生命周期：Release 后可被他节点重新获取；租约过期后同样
+- `GetAndDelete` 使用 Redis `GETDEL`，并发读取一次性 token/state 时恰好一个调用方成功
 - 字节级与上游 `sonic.Marshal` 一致，且能被上游 `SetRemote` 与 `RegisterDecoder`
   正确消费——即**用上游自己的代码验证，而非我复制的解码逻辑**
 
-**同时满足**：M2 总线连接层、M3.1 共享 KV、M2.2 会话粘性（D8）、M10 分布式 semaphore。
+**当前运行时覆盖**：Core 会话粘性、routing warm coordination、batch/job 租约、Gemini
+上传会话、realtime/transport 一次性状态等所有 `RuntimeKVStore` 消费方。M3 额度计数和 M10
+并发 semaphore 仍按设计直接使用各自的 Redis 原子/Lua 路径，不经 `schemas.KVStore`。
 
 > 待办（不阻塞，需真实部署验证）：`OpTimeout` 默认 2s 是保守取值。
 > `schemas.KVStore` 的方法**不带 context**，没有调用方 deadline 可继承、
@@ -1453,13 +1465,55 @@ go test ./tests/tenant/ -cover -coverpkg=./internal/... # coverage: 52.3% of sta
 | `internal/configbus/outbox.go` | `config_generations` + `config_change_outbox`，同事务分配租户 generation 并写 durable change；`PublishAndNotify` 先提交再发加速通知 |
 | `internal/configbus/reconcile.go` | 仅按 generation 对账；stale/duplicate 通知丢弃，reload 失败不推进 fence；周期 runner 带随机初始抖动 |
 | `internal/configbus/redis.go` | Redis pub/sub 广播租户与 generation，不携带配置本体；消息丢失由数据库对账兜底 |
+| `internal/virtualkey/` | MaaS 自有 `tenant_virtual_keys` 真相表、AES-GCM 可恢复密文、一次性明文返回、`PENDING/ACTIVE/FAILED/REVOKING/REVOKED` 状态机和幂等投影器 |
+| `internal/bifrostprojection/` | 在租户绑定事务内写 Bifrost `governance_virtual_keys`，首次 INSERT 原子携带 `tenant_id`，复用 Bifrost secret hook 二次加密并更新治理内存缓存 |
+| `cmd/maas-gateway/` | 消费 Redis 通知并每 15 秒按 generation 对账；新节点首次观察租户时从 MaaS 真相源回放已激活 Key，修复冷启动空缓存和 Bifrost 侧漂移 |
 | `internal/quota/counter.go` | Redis Lua 原子 `INCRBY`，首次写入设置固定窗口 TTL；`ChargeOnce` 将 request/attempt 幂等 claim 与扣费放在同一脚本 |
 
 已覆盖的性质包括：outbox 事务回滚不留下 generation 或事件、加速器故障不影响
 durable source of truth、generation fencing 不允许旧快照覆盖新快照，以及 Redis
-计数脚本的参数/身份校验。尚未接入的部分是具体 `ConfigStore` reload、低频对账
-进程、Redis 连接生命周期和治理插件的 `ChargeBudgets` outbox 重试；这些接入点
-需要产品侧的配置快照与计费口径，而不是再扩张底层原语的职责。
+计数脚本的参数/身份校验。Virtual Key 已完成真实 Compose E2E：创建由 `pending` 收敛到
+`active`，重启后旧 Key 仍可调用数据面，撤销由 `revoking` 收敛到 `revoked`，Bifrost 行
+被删除且旧凭证返回 401。其他配置类型和治理插件的 `ChargeBudgets` outbox 重试仍未接入；
+quota/fairness/真实用量回写已在下一节通过 MaaS 自有插件完成。
+
+#### 7.7 M4/M6/M7/M9/M10：成员门户与网关计量闭环
+
+本轮新增 `internal/member` 和 `internal/authn`。成员密码只保存 bcrypt hash，会话 Bearer/CSRF
+只保存 SHA-256 摘要；会话位于控制面 Postgres，因此 API 重启和多副本不会使登录失效。
+每个租户初始化 `owner/admin/developer/viewer` 四个固定角色。平台管理员创建首个 owner；租户侧
+具备 `member.manage` 的用户仍不能创建、授予或修改 owner，并且存储层拒绝移除最后一个 active owner。
+成员一旦 disabled，所有尚未过期的现有会话也会在下一次请求时立即拒绝。
+
+`maas-ui` 保持同源部署，但登录入口和渲染表面按 principal 分开。Portal API 不接收 tenant ID，
+只从服务端 session 提取作用域，已覆盖成员、Virtual Key、当前套餐/配额、本月用量金额和租户审计。
+Admin 路由额外要求 `platform_admin`，关闭了“租户用户持有同名 permission 后调用 `/api/admin/*`
+并自行指定 tenant ID”的越权路径。
+
+平台端新增套餐目录与 SKU 定价页面及 `/api/admin/skus` 管理接口。租户状态、成员、套餐创建、
+SKU 更新和套餐分配均改为业务变更与 `AppendTx` 在控制面同一事务提交；不再存在业务已提交、
+审计追加失败后只能写日志的窗口。租户创建时固定角色、默认套餐和审计也在同一事务完成。
+审计 scope 与 actor 分离：平台代租户执行的操作保留 `platform_admin` 操作者，同时携带资源
+`tenant_id`，所以平台能查全量记录，租户门户只能查本租户记录。
+
+`plugins/tenantusage` 作为类型化 LLM plugin 注册到完整 Bifrost Server：
+
+```text
+HTTP tenantauth -> PreLLM: DB 套餐/模型白名单 + Redis money counter + semaphore
+                -> Provider attempt
+                -> PostLLM: 释放 lease -> Redis 幂等扣 USD micros -> Postgres 幂等 usage
+```
+
+结算幂等键为 `request_id + attempt`，fallback 的物理 Provider 调用分别记账；流式请求只在 final
+chunk 结算，取消/超时使用 Bifrost `BilledUsage` 记录已被上游消耗的 token。Provider 未报告成本时，
+回退到 MaaS `SKU` 的输入/输出每百万 token 微单位价格，再按 basis points 计算 markup；
+Provider 成本和 markup 的总和从租户本月共享 USD 额度扣减。
+并发租约在长请求执行期间按 TTL 的三分之一自动续期；正常结束主动释放，进程崩溃后仍由 TTL 回收，
+避免流式响应超过初始租期后被提前腾出并发槽。
+
+当前额度语义仍是 D13 中间档：准入时用数据库账本和 Redis 当月 counter 的较大值，一个已获准请求
+可能在响应后跨过剩余额度。它保证后续请求被拒绝，不保证单请求零超支。严格预付费必须在请求前按
+`max_tokens` reservation，响应后 capture/release；在那之前不得把该能力销售为硬额度。
 
 ### Phase 2：能收钱
 
@@ -1526,7 +1580,7 @@ Phase 3 再补完整的角色/权限管理界面。
 | R12 | 平台运维可读租户 BYOK 明文 | 租户商业机密泄漏，信任崩塌 | 3.5.4：后台仅展示掩码，沿用 `Redacted()` 范式 |
 | R13 | 租户从日志反推平台池 key 构成 | 平台密钥资产暴露 | 3.5.5：`selected_key_id` 按 `key_ownership` 脱敏 + 纳入 `DimensionScope` |
 | R14 | **误用 `SyncDelegate` 做额度计数** | LWW 静默丢增量，**计费损坏且无报错** | M3.2：计数器走 go-redis `INCRBY` + Lua，禁止经 `KVStore` 接口或 `SyncDelegate` |
-| ~~R15~~ | ~~多节点会话粘性静默失效~~ | ~~同一会话拿到不同 key/分层，行为不一致~~ | ✅ **已消除**：Redis 版 `KVStore` 已交付（§7.1），`TestCrossNode_RedisSessionStickinessIsShared` 验证 3 节点读到同一 pinned key |
+| R15 | 多节点会话粘性静默失效 | 同一会话拿到不同 key/分层，行为不一致 | ✅ 已关闭：Redis 版 `KVStore` 已通过 `KVStoreFactory` 注入 `maas-gateway`（§7.1），`TestCrossNode_RedisSessionStickinessIsShared` 验证 3 节点读到同一 pinned key，工厂生命周期测试验证注入发生在运行时消费方初始化前且默认内存 Store 被关闭 |
 
 ---
 
@@ -1571,8 +1625,8 @@ Phase 3 再补完整的角色/权限管理界面。
 
 **D12 / D13 相对独立**，可以与 D11 并行决策。
 
-> **三项都不影响 Phase 0 已交付的内容**，也没有阻挡 Phase 1 第 4 项
-> （Redis 版 `KVStore`）——该项已于 2026-09 交付，见 §7.1。
+> **三项都不影响 Phase 0 已交付的内容**，也没有阻挡已经完成的 Phase 1 第 4 项
+> （Redis 版 `KVStore`）实现、契约测试与网关运行时注入，见 §7.1。
 
 ### 9.2 D11 路线对比与 RLS 实测结论（2026-09）
 

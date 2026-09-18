@@ -1,0 +1,38 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "source_of_truth": "split",
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "postgres",
+      "port": "5432",
+      "user": "bifrost_config_app",
+      "password": "env.BIFROST_CONFIG_PASSWORD",
+      "db_name": "bifrost_config",
+      "ssl_mode": "disable"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "postgres",
+      "port": "5432",
+      "user": "bifrost_logs_app",
+      "password": "env.BIFROST_LOGS_PASSWORD",
+      "db_name": "bifrost_logs",
+      "ssl_mode": "disable",
+      "matview_refresh_interval": "off"
+    }
+  },
+  "client": {
+    "drop_excess_requests": false,
+    "initial_pool_size": 5000,
+    "enable_logging": true,
+    "disable_content_logging": false,
+    "log_retention_days": 30,
+    "enforce_auth_on_inference": true,
+    "allowed_origins": ["*"]
+  }
+}

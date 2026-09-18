@@ -35,9 +35,9 @@ var (
 // tenant user cannot name another tenant in a request and platform admins are
 // explicitly distinguished from tenant users.
 type Principal struct {
-	Type     PrincipalType
-	ID       string
-	TenantID tenant.ID
+	Type     PrincipalType `json:"type"`
+	ID       string        `json:"id"`
+	TenantID tenant.ID     `json:"tenant_id,omitempty"`
 }
 
 func (p Principal) Valid() bool {
@@ -81,16 +81,18 @@ func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 type Permission string
 
 const (
-	PermissionTenantRead    Permission = "tenant.read"
-	PermissionTenantManage  Permission = "tenant.manage"
-	PermissionMemberManage  Permission = "member.manage"
-	PermissionKeyManage     Permission = "key.manage"
-	PermissionBudgetManage  Permission = "budget.manage"
-	PermissionBillingRead   Permission = "billing.read"
-	PermissionBillingManage Permission = "billing.manage"
-	PermissionAuditRead     Permission = "audit.read"
-	PermissionAuditExport   Permission = "audit.export"
-	PermissionPolicyManage  Permission = "policy.manage"
+	PermissionTenantRead     Permission = "tenant.read"
+	PermissionTenantManage   Permission = "tenant.manage"
+	PermissionMemberManage   Permission = "member.manage"
+	PermissionKeyManage      Permission = "key.manage"
+	PermissionKeyReveal      Permission = "key.reveal"
+	PermissionBudgetManage   Permission = "budget.manage"
+	PermissionBillingRead    Permission = "billing.read"
+	PermissionBillingManage  Permission = "billing.manage"
+	PermissionRequestLogRead Permission = "request_log.read"
+	PermissionAuditRead      Permission = "audit.read"
+	PermissionAuditExport    Permission = "audit.export"
+	PermissionPolicyManage   Permission = "policy.manage"
 )
 
 type Role struct {
@@ -173,6 +175,16 @@ func (s *Store) CreateRole(ctx context.Context, role Role, permissions []Permiss
 		}
 		return nil
 	})
+}
+
+func (s *Store) GrantPermission(ctx context.Context, roleID string, permission Permission) error {
+	if s == nil || s.db == nil {
+		return errors.New("rbac: database is nil")
+	}
+	if strings.TrimSpace(roleID) == "" || strings.TrimSpace(string(permission)) == "" {
+		return errors.New("rbac: role id and permission are required")
+	}
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&RolePermission{RoleID: roleID, Permission: permission}).Error
 }
 
 func (s *Store) BindRole(ctx context.Context, roleID string, principal Principal) error {

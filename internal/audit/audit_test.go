@@ -44,3 +44,25 @@ func TestAuditRedactsAndRollsBack(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 }
+
+func TestPlatformActorCanWriteTenantScopedAudit(t *testing.T) {
+	s := auditStore(t)
+	platform := rbac.Principal{Type: rbac.PrincipalPlatformAdmin, ID: "admin"}
+	entry, err := s.Append(context.Background(), audit.Input{Principal: platform, TenantID: "tenant-a", Action: "member.create", ResourceType: "member", ResourceID: "member-a"})
+	require.NoError(t, err)
+	require.NotNil(t, entry.TenantID)
+	require.Equal(t, "tenant-a", string(*entry.TenantID))
+	tenantRows, err := s.ListTenant(context.Background(), "tenant-a", 100)
+	require.NoError(t, err)
+	require.Len(t, tenantRows, 1)
+	platformRows, err := s.ListPlatform(context.Background(), 100)
+	require.NoError(t, err)
+	require.Len(t, platformRows, 1)
+}
+
+func TestTenantActorCannotWriteAnotherTenantAudit(t *testing.T) {
+	s := auditStore(t)
+	principal := rbac.Principal{Type: rbac.PrincipalTenantUser, ID: "member-a", TenantID: "tenant-a"}
+	_, err := s.Append(context.Background(), audit.Input{Principal: principal, TenantID: "tenant-b", Action: "member.create", ResourceType: "member", ResourceID: "member-b"})
+	require.ErrorIs(t, err, audit.ErrInvalidEntry)
+}

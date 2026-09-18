@@ -43,6 +43,7 @@ func (Entry) TableName() string { return "audit_entries" }
 
 type Input struct {
 	Principal    rbac.Principal
+	TenantID     tenant.ID
 	Action       string
 	ResourceType string
 	ResourceID   string
@@ -95,9 +96,12 @@ func (s *Store) AppendTx(tx *gorm.DB, in Input) (*Entry, error) {
 		strings.TrimSpace(in.ResourceType) == "" || strings.TrimSpace(in.ResourceID) == "" {
 		return nil, ErrInvalidEntry
 	}
-	if in.Principal.Type == rbac.PrincipalPlatformAdmin {
-		// Platform entries intentionally have no tenant scope.
-		in.Principal.TenantID = ""
+	scopeTenantID := in.TenantID
+	if in.Principal.Type == rbac.PrincipalTenantUser {
+		if scopeTenantID != "" && scopeTenantID != in.Principal.TenantID {
+			return nil, ErrInvalidEntry
+		}
+		scopeTenantID = in.Principal.TenantID
 	}
 	before, err := redactSnapshot(in.Before)
 	if err != nil {
@@ -113,7 +117,7 @@ func (s *Store) AppendTx(tx *gorm.DB, in Input) (*Entry, error) {
 	}
 	e := &Entry{
 		ID: id, PrincipalType: in.Principal.Type, PrincipalID: in.Principal.ID,
-		TenantID: tenantPtr(in.Principal.TenantID), Action: in.Action,
+		TenantID: tenantPtr(scopeTenantID), Action: in.Action,
 		ResourceType: in.ResourceType, ResourceID: in.ResourceID,
 		BeforeJSON: before, AfterJSON: after, SourceIP: in.SourceIP,
 		RequestID: in.RequestID, CreatedAt: time.Now().UTC(),
@@ -150,7 +154,7 @@ func (s *Store) ListPlatform(ctx context.Context, limit int) ([]Entry, error) {
 		limit = 100
 	}
 	var rows []Entry
-	err := s.db.WithContext(ctx).Where("tenant_id IS NULL").Order("created_at DESC").Limit(limit).Find(&rows).Error
+	err := s.db.WithContext(ctx).Order("created_at DESC").Limit(limit).Find(&rows).Error
 	if err != nil {
 		return nil, fmt.Errorf("audit: list platform: %w", err)
 	}

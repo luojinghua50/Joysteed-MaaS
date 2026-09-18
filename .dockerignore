@@ -1,0 +1,8 @@
+.git/
+.env
+.DS_Store
+BIFROST_ARCHITECTURE.md
+maas-ui/
+docs/
+coverage/
+*.log

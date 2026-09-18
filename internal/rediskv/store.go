@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -21,6 +23,9 @@ type Store struct {
 	client    redis.UniversalClient
 	opTimeout time.Duration
 	keyPrefix string
+
+	decoderMu sync.RWMutex
+	decoders  map[string]kvstore.TypeDecoder
 }
 
 // New connects and verifies reachability before returning, matching the
@@ -43,7 +48,7 @@ func New(c *Config) (*Store, error) {
 		keyPrefix = DefaultKeyPrefix
 	}
 
-	s := &Store{client: client, opTimeout: opTimeout, keyPrefix: keyPrefix}
+	s := &Store{client: client, opTimeout: opTimeout, keyPrefix: keyPrefix, decoders: make(map[string]kvstore.TypeDecoder)}
 
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
@@ -63,7 +68,7 @@ func NewWithClient(client redis.UniversalClient, opTimeout time.Duration, keyPre
 	if keyPrefix == "" {
 		keyPrefix = DefaultKeyPrefix
 	}
-	return &Store{client: client, opTimeout: opTimeout, keyPrefix: keyPrefix}
+	return &Store{client: client, opTimeout: opTimeout, keyPrefix: keyPrefix, decoders: make(map[string]kvstore.TypeDecoder)}
 }
 
 func (s *Store) ctx() (context.Context, context.CancelFunc) {
@@ -72,7 +77,8 @@ func (s *Store) ctx() (context.Context, context.CancelFunc) {
 
 func (s *Store) k(key string) string { return s.keyPrefix + key }
 
-// Get returns the stored value as raw JSON bytes.
+// Get returns the stored value decoded for registered transport key prefixes,
+// or as raw JSON bytes when no decoder matches.
 //
 // Two deliberate choices, both dictated by existing consumers rather than
 // preference:
@@ -106,7 +112,55 @@ func (s *Store) Get(key string) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rediskv: get %q: %w", key, err)
 	}
-	return raw, nil
+	return s.decodeValue(key, raw), nil
+}
+
+// GetAndDelete atomically consumes a value. Redis GETDEL prevents two gateway
+// nodes from both accepting the same one-shot transport token or upload state.
+func (s *Store) GetAndDelete(key string) (any, error) {
+	if key == "" {
+		return nil, kvstore.ErrEmptyKey
+	}
+	ctx, cancel := s.ctx()
+	defer cancel()
+
+	raw, err := s.client.GetDel(ctx, s.k(key)).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return nil, kvstore.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("rediskv: getdel %q: %w", key, err)
+	}
+	return s.decodeValue(key, raw), nil
+}
+
+// RegisterDecoder restores transport-specific concrete values after Redis has
+// carried them across a process boundary. The longest matching prefix wins,
+// matching framework/kvstore.Store.
+func (s *Store) RegisterDecoder(keyPrefix string, decoder kvstore.TypeDecoder) {
+	s.decoderMu.Lock()
+	s.decoders[keyPrefix] = decoder
+	s.decoderMu.Unlock()
+}
+
+func (s *Store) decodeValue(key string, raw []byte) any {
+	s.decoderMu.RLock()
+	var bestPrefix string
+	var bestDecoder kvstore.TypeDecoder
+	for prefix, decoder := range s.decoders {
+		if strings.HasPrefix(key, prefix) && len(prefix) > len(bestPrefix) {
+			bestPrefix = prefix
+			bestDecoder = decoder
+		}
+	}
+	s.decoderMu.RUnlock()
+
+	if bestDecoder != nil {
+		if value, err := bestDecoder(raw); err == nil {
+			return value
+		}
+	}
+	return raw
 }
 
 // SetWithTTL stores value as JSON. ttl=0 means no expiration, matching

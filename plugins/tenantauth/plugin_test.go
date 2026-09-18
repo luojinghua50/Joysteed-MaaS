@@ -9,6 +9,7 @@ import (
 	"github.com/luojinghua50/Joysteed-MaaS/plugins/tenantauth"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 type resolver struct {
@@ -35,8 +36,23 @@ func TestPreAuthResolvesTenantAndPreHookKeepsIdentity(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "sk-bf-secret", r.got)
 	require.Equal(t, tenant.ID("tenant-a"), tenant.FromContext(ctx))
-	_, err = p.HTTPTransportPreHook(ctx, req(map[string]string{"Authorization": "Bearer sk-bf-secret"}))
+
+	// Match the real transport boundary: pre-auth user values are copied to
+	// fasthttp, then the pre-hook receives a newly constructed BifrostContext.
+	// BifrostContext intentionally refuses to read through that recyclable
+	// parent, so the plugin must establish identity again in the second phase.
+	var fastCtx fasthttp.RequestCtx
+	var fastReq fasthttp.Request
+	fastCtx.Init(&fastReq, nil, nil)
+	for key, value := range ctx.GetUserValues() {
+		fastCtx.SetUserValue(key, value)
+	}
+	preHookCtx := schemas.NewBifrostContext(&fastCtx, schemas.NoDeadline)
+	require.Empty(t, tenant.FromContext(preHookCtx))
+	_, err = p.HTTPTransportPreHook(preHookCtx, req(map[string]string{"Authorization": "Bearer sk-bf-secret"}))
 	require.NoError(t, err)
+	require.Equal(t, tenant.ID("tenant-a"), tenant.FromContext(preHookCtx))
+	require.Equal(t, "sk-bf-secret", preHookCtx.Value(schemas.BifrostContextKeyVirtualKey))
 }
 
 func TestPreAuthRejectsMissingAndAmbiguousCredentials(t *testing.T) {
@@ -80,16 +96,15 @@ func TestPreAuthMapsResolverFailuresWithoutLeakingDetails(t *testing.T) {
 	}
 }
 
-func TestPreHookRejectsCredentialRewrite(t *testing.T) {
-	r := &resolver{id: "tenant-a"}
+func TestPreHookRevalidatesCredential(t *testing.T) {
+	r := &resolver{err: tenantauth.ErrInvalidVirtualKey}
 	p, err := tenantauth.New(r)
 	require.NoError(t, err)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	_, err = p.HTTPTransportPreAuthHook(ctx, req(map[string]string{"x-bf-vk": "sk-bf-a"}))
-	require.NoError(t, err)
-	resp, err := p.HTTPTransportPreHook(ctx, req(map[string]string{"x-bf-vk": "sk-bf-b"}))
+	resp, err := p.HTTPTransportPreHook(ctx, req(map[string]string{"x-bf-vk": "sk-bf-revoked"}))
 	require.NoError(t, err)
 	require.Equal(t, 401, resp.StatusCode)
+	require.Equal(t, "sk-bf-revoked", r.got)
 }
 
 func TestPreAuthLeavesSessionAndHealthRoutesToTheirOwnAuth(t *testing.T) {

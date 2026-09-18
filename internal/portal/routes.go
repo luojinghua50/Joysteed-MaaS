@@ -68,6 +68,12 @@ func adminPermission(method, path string) rbac.Permission {
 	return ""
 }
 func portalPermission(method, path string) rbac.Permission {
+	if strings.Contains(path, "/request-logs") || strings.Contains(path, "/usage/") && strings.HasSuffix(path, "/detail") {
+		if method == http.MethodGet {
+			return rbac.PermissionRequestLogRead
+		}
+		return ""
+	}
 	if strings.Contains(path, "/audit") {
 		return rbac.PermissionAuditRead
 	}

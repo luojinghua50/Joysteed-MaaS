@@ -61,12 +61,18 @@ func main() {
 			lifetime = parsed
 		}
 	}
-	api := httpapi.New(db, redisClient, httpapi.Config{
-		AdminUsername:   env("MAAS_ADMIN_USERNAME", "admin"),
-		AdminPassword:   env("MAAS_ADMIN_PASSWORD", "change-me"),
-		SessionLifetime: lifetime,
-		CORSOrigin:      env("MAAS_CORS_ORIGIN", "http://localhost:3000"),
+	api, err := httpapi.New(db, redisClient, httpapi.Config{
+		AdminUsername:        env("MAAS_ADMIN_USERNAME", "admin"),
+		AdminPassword:        env("MAAS_ADMIN_PASSWORD", "change-me"),
+		SessionLifetime:      lifetime,
+		CORSOrigin:           env("MAAS_CORS_ORIGIN", "http://localhost:3000"),
+		KeyEncryptionKey:     env("MAAS_KEY_ENCRYPTION_KEY", "development-only-maas-key-encryption-material"),
+		GatewayInternalURL:   env("MAAS_GATEWAY_INTERNAL_URL", "http://maas-gateway:8080"),
+		GatewayInternalToken: env("MAAS_INTERNAL_TOKEN", "development-only-maas-internal-token"),
 	})
+	if err != nil {
+		log.Fatal(err)
+	}
 	if err := api.Migrate(ctx); err != nil {
 		log.Fatal(err)
 	}

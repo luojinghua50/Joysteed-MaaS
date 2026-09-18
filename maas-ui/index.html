@@ -3,20 +3,22 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MaaS Control Plane</title>
-  <link rel="stylesheet" href="/styles.css">
+  <title>MaaS</title>
+  <link rel="stylesheet" href="/styles.css?v=20260918-14">
 </head>
-<body>
+<body class="entry-loading">
   <div id="login-view" class="auth-shell">
     <div class="auth-panel">
       <div class="brand-mark">M</div>
-      <p class="eyebrow">CONTROL PLANE</p>
-      <h1>MaaS 管理后台</h1>
-      <p class="muted">租户、用量与平台运行状态</p>
+      <p id="login-eyebrow" class="eyebrow">MAAS</p>
+      <h1 id="login-title">登录</h1>
       <form id="login-form">
-        <label>管理员账号<input id="username" name="username" value="admin" autocomplete="username" required></label>
-        <label>管理员密码<input id="password" name="password" type="password" value="change-me" autocomplete="current-password" required></label>
-        <button class="primary" type="submit">登录控制台</button>
+        <label class="admin-auth">管理员账号<input id="username" name="username" value="admin" autocomplete="username"></label>
+        <label class="admin-auth">管理员密码<input id="password" name="password" type="password" autocomplete="current-password"></label>
+        <label class="tenant-auth hidden">租户标识<input id="tenant-slug" name="tenant" placeholder="acme" autocomplete="organization"></label>
+        <label class="tenant-auth hidden">邮箱<input id="member-email" name="email" type="email" autocomplete="username"></label>
+        <label class="tenant-auth hidden">密码<input id="member-password" name="member-password" type="password" autocomplete="current-password"></label>
+        <button id="login-submit" class="primary" type="submit">登录</button>
         <p id="login-error" class="error" role="alert"></p>
       </form>
     </div>
@@ -24,28 +26,222 @@
 
   <div id="app-view" class="app-shell hidden">
     <header class="topbar">
-      <div class="topbar-brand"><span class="brand-mark small">M</span><span>MaaS <b>Control Plane</b></span></div>
+      <div class="topbar-brand"><span class="brand-mark small">M</span><span>MaaS <b id="surface-name">Control Plane</b></span></div>
       <div class="topbar-actions"><span id="identity" class="identity"></span><button id="logout" class="ghost">退出</button></div>
     </header>
-    <main class="content">
-      <section class="page-heading"><div><p class="eyebrow">OPERATIONS</p><h1>平台概览</h1><p class="muted">控制面服务已连接，数据来自 Postgres。</p></div><span id="api-status" class="status-pill">检查中</span></section>
-      <section class="stats-grid">
-        <article class="stat-card"><span class="stat-label">租户</span><strong id="stat-tenants">--</strong><span class="stat-note">已注册租户</span></article>
-        <article class="stat-card"><span class="stat-label">审计事件</span><strong id="stat-audits">--</strong><span class="stat-note">控制面记录</span></article>
-        <article class="stat-card"><span class="stat-label">用量事件</span><strong id="stat-usage">--</strong><span class="stat-note">计量流水</span></article>
-        <article class="stat-card accent"><span class="stat-label">Redis</span><strong id="stat-redis">--</strong><span class="stat-note">共享状态服务</span></article>
-      </section>
-      <section class="workspace-grid">
-        <article class="panel tenants-panel">
-          <div class="panel-heading"><div><p class="eyebrow">TENANT REGISTRY</p><h2>租户目录</h2></div><button id="refresh" class="icon-button" title="刷新">↻</button></div>
-          <form id="tenant-form" class="inline-form"><input id="tenant-id" placeholder="租户 ID" required><input id="tenant-slug" placeholder="slug" required><input id="tenant-name" placeholder="名称"><button class="primary" type="submit">创建租户</button></form>
+
+    <main id="admin-view" class="content hidden">
+      <div class="admin-toolbar">
+        <nav class="workspace-nav" aria-label="管理工作区">
+          <button class="active" type="button" data-admin-workspace="overview">概览</button>
+          <button type="button" data-admin-workspace="tenants">租户</button>
+          <button type="button" data-admin-workspace="catalog">套餐与定价</button>
+        </nav>
+        <div class="toolbar-status"><span id="api-status" class="status-pill">检查中</span><button id="refresh-admin" class="icon-button" type="button" title="刷新当前数据" aria-label="刷新当前数据">&#8635;</button></div>
+      </div>
+
+      <div id="admin-workspace-overview" class="admin-workspace">
+        <section class="page-heading"><div><p class="eyebrow">OPERATIONS</p><h1>平台概览</h1><p class="muted">控制面运行状态与近期变更。</p></div></section>
+        <section class="stats-grid">
+          <article class="stat-card"><span class="stat-label">租户</span><strong id="stat-tenants">--</strong><span class="stat-note">已注册租户</span></article>
+          <article class="stat-card"><span class="stat-label">审计事件</span><strong id="stat-audits">--</strong><span class="stat-note">控制面记录</span></article>
+          <article class="stat-card"><span class="stat-label">用量事件</span><strong id="stat-usage">--</strong><span class="stat-note">计量流水</span></article>
+          <article class="stat-card accent"><span class="stat-label">Redis</span><strong id="stat-redis">--</strong><span class="stat-note">共享状态服务</span></article>
+        </section>
+        <section class="panel audit-panel"><div class="panel-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h2>最近审计</h2></div></div><div id="admin-audit-list" class="audit-list compact-audit"></div></section>
+      </div>
+
+      <div id="admin-workspace-tenants" class="admin-workspace hidden">
+        <section class="page-heading"><div><p class="eyebrow">TENANT REGISTRY</p><h1>租户</h1><p class="muted">企业或团队、成员权限、API 密钥与套餐分配。</p></div></section>
+        <section class="panel tenants-panel">
+          <div class="panel-heading"><div><h2>租户目录</h2></div></div>
+          <form id="tenant-form" class="inline-form"><input id="tenant-id" placeholder="租户 ID" required><input id="new-tenant-slug" placeholder="登录标识 slug" required><input id="tenant-name" placeholder="企业或团队名称"><button class="primary" type="submit">创建租户</button></form>
           <p id="tenant-error" class="error" role="alert"></p>
-          <div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>状态</th><th>创建时间</th></tr></thead><tbody id="tenant-rows"></tbody></table></div>
-        </article>
-        <article class="panel audit-panel"><div class="panel-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h2>最近审计</h2></div></div><div id="audit-list" class="audit-list"></div></article>
-      </section>
+          <div class="table-wrap"><table><thead><tr><th>ID</th><th>登录标识</th><th>名称</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tenant-rows"></tbody></table></div>
+        </section>
+        <section id="admin-tenant-panel" class="panel detail-panel hidden">
+          <div class="panel-heading"><div><p class="eyebrow">TENANT PROFILE</p><h2 id="admin-tenant-title">租户详情</h2></div><button class="icon-button close-detail" type="button" title="关闭" aria-label="关闭">&times;</button></div>
+          <form id="tenant-edit-form" class="catalog-form tenant-edit-form">
+            <div class="form-grid">
+              <label>租户 ID<input id="edit-tenant-id" readonly><span class="field-help">内部唯一标识，创建后不可修改。</span></label>
+              <label>当前状态<input id="edit-tenant-status" readonly></label>
+              <label>登录标识<input id="edit-tenant-slug" placeholder="例如：joysteed" required><span class="field-help">租户门户登录使用；修改后旧标识立即失效。</span></label>
+              <label>企业或团队名称<input id="edit-tenant-name" placeholder="企业或团队名称"></label>
+            </div>
+            <div class="form-actions"><button class="primary" type="submit">保存租户信息</button></div>
+          </form>
+          <p id="admin-tenant-edit-error" class="error" role="alert"></p>
+        </section>
+        <section id="admin-key-panel" class="panel detail-panel hidden">
+          <div class="panel-heading"><div><p class="eyebrow">TENANT CREDENTIALS</p><h2 id="admin-key-title">API 密钥</h2></div><button class="icon-button close-detail" type="button" title="关闭" aria-label="关闭">&times;</button></div>
+          <form id="admin-key-form" class="key-form"><input id="admin-key-name" placeholder="密钥名称" maxlength="120" required><button class="primary" type="submit">创建密钥</button></form>
+          <p id="admin-key-error" class="error" role="alert"></p>
+          <div class="table-wrap"><table><thead><tr><th>名称</th><th>指纹</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="admin-key-rows"></tbody></table></div>
+        </section>
+        <section id="admin-member-panel" class="panel detail-panel hidden">
+          <div class="panel-heading"><div><p class="eyebrow">TENANT MEMBERS</p><h2 id="admin-member-title">成员</h2></div><button class="icon-button close-detail" type="button" title="关闭" aria-label="关闭">&times;</button></div>
+          <form id="admin-member-form" class="member-form"><input id="admin-member-name" placeholder="姓名" required><input id="admin-member-email" type="email" placeholder="邮箱" required><input id="admin-member-password" type="password" placeholder="初始密码（至少 12 位）" minlength="12" required><select id="admin-member-role"><option value="owner">Owner</option><option value="admin">Admin</option><option value="developer">Developer</option><option value="viewer">Viewer</option></select><button class="primary" type="submit">添加成员</button></form>
+          <p id="admin-member-error" class="error" role="alert"></p>
+          <div class="table-wrap"><table><thead><tr><th>成员</th><th>角色</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead><tbody id="admin-member-rows"></tbody></table></div>
+        </section>
+        <section id="admin-plan-panel" class="panel detail-panel hidden">
+          <div class="panel-heading"><div><p class="eyebrow">TENANT PLAN</p><h2 id="admin-plan-title">套餐</h2></div><button class="icon-button close-detail" type="button" title="关闭" aria-label="关闭">&times;</button></div>
+          <div class="tenant-plan-current">
+            <span class="stat-label">当前生效套餐</span>
+            <div class="current-plan-heading"><strong id="admin-current-plan-name">加载中</strong><span id="admin-current-plan-meta" class="muted"></span></div>
+            <div id="admin-current-plan-models" class="model-chip-list"></div>
+          </div>
+          <form id="admin-plan-form" class="key-form"><select id="admin-plan-select" aria-label="切换套餐"></select><button class="primary" type="submit">应用套餐</button></form>
+          <p id="admin-plan-error" class="error" role="alert"></p>
+        </section>
+      </div>
+
+      <div id="admin-workspace-catalog" class="admin-workspace hidden">
+        <section class="page-heading"><div><p class="eyebrow">COMMERCIAL CATALOG</p><h1>套餐与定价</h1><p class="muted">套餐控制可用模型和共享美元额度，模型定价用于计算实际消耗。</p></div></section>
+        <section class="workspace-grid billing-grid">
+          <article class="panel plan-panel">
+            <div class="panel-heading"><div><p class="eyebrow">PLAN CATALOG</p><h2 id="plan-form-title">新建套餐</h2></div><span id="plan-model-catalog-status" class="catalog-status">加载模型</span></div>
+            <form id="plan-form" class="catalog-form plan-form">
+              <div class="form-grid plan-basics">
+                <label>套餐名称<input id="plan-name" placeholder="例如：专业版" required></label>
+                <label>套餐 ID<input id="plan-id" placeholder="例如：pro" pattern="[a-z0-9][a-z0-9-]*" required><span class="field-help">内部唯一编码，只使用小写字母、数字和短横线。</span></label>
+                <label>月费（USD）<input id="plan-monthly" type="number" min="0" step="0.000001" value="0" required></label>
+                <label>每月包含额度（USD）<input id="plan-credit" type="number" min="0" step="0.000001" value="100" required><span class="field-help">所有允许模型共同消耗这笔金额。</span></label>
+                <label>租户最大并发<input id="plan-concurrency" type="number" min="1" step="1" value="5" required><span class="field-help">同一租户同时占用的 Provider 请求数。</span></label>
+                <label>额度用尽后<select id="plan-overage"><option value="reject">拒绝新请求</option><option value="allow">允许继续使用</option></select></label>
+              </div>
+              <div class="model-editor">
+                <div class="subsection-heading"><div><b>允许使用的模型</b><span>选择模型系列后自动加入当前 Provider 中的版本，可逐个移除或重新添加。</span></div></div>
+                <div class="model-picker-row">
+                  <label>模型系列<select id="plan-model-family"><option value="">选择模型系列</option></select></label>
+                  <label>添加模型版本<input id="plan-model-add" list="model-options" autocomplete="off" placeholder="搜索 provider/model"></label>
+                  <button id="add-plan-model" class="secondary" type="button">添加</button>
+                </div>
+                <div id="plan-model-selection" class="model-chip-list" aria-live="polite"></div>
+              </div>
+              <div class="form-actions"><button id="plan-submit" class="primary" type="submit">创建套餐</button><button id="plan-cancel-edit" class="secondary hidden" type="button">取消编辑</button></div>
+            </form>
+            <p id="plan-error" class="error" role="alert"></p>
+            <div class="table-wrap"><table><thead><tr><th>套餐</th><th>月费 / 额度</th><th>使用策略</th><th>允许模型</th><th>操作</th></tr></thead><tbody id="plan-rows"></tbody></table></div>
+          </article>
+          <article class="panel pricing-panel">
+            <div class="panel-heading"><div><p class="eyebrow">MODEL COST</p><h2>模型成本定价</h2><p class="section-note">Provider 未返回实际成本时使用；最终消耗还会应用平台加价率。</p></div><span id="model-catalog-status" class="catalog-status">加载模型</span></div>
+            <form id="sku-form" class="catalog-form sku-form">
+              <label>模型<input id="sku-id" list="model-options" placeholder="搜索 provider/model，或填写 *" autocomplete="off" required><span class="field-help">使用规范 ID，例如 <code>openai/gpt-4o-mini</code>。</span></label>
+              <label>显示名称<input id="sku-name" placeholder="例如：GPT-4o Mini" required></label>
+              <label>输入成本 / 1M Token（USD）<input id="sku-prompt" type="number" min="0" step="0.000001" value="0" required></label>
+              <label>输出成本 / 1M Token（USD）<input id="sku-completion" type="number" min="0" step="0.000001" value="0" required></label>
+              <div class="form-actions"><button id="sku-submit" class="primary" type="submit">新增成本定价</button><button id="sku-cancel-edit" class="secondary hidden" type="button">取消编辑</button></div>
+            </form>
+            <p id="sku-error" class="error" role="alert"></p>
+            <div class="table-wrap"><table><thead><tr><th>模型</th><th>名称</th><th>输入 / 1M</th><th>输出 / 1M</th><th>操作</th></tr></thead><tbody id="sku-rows"></tbody></table></div>
+          </article>
+        </section>
+      </div>
+    </main>
+
+    <main id="portal-view" class="content hidden">
+      <div class="portal-layout">
+        <aside class="portal-sidebar">
+          <div class="portal-menu-title"><span>工作台</span><strong>租户门户</strong></div>
+          <nav class="portal-menu" aria-label="租户工作区">
+            <button class="portal-menu-direct active" type="button" data-portal-workspace-button="overview"><span class="portal-menu-icon" aria-hidden="true">&#9638;</span><span>总览</span></button>
+            <div class="portal-menu-group" data-portal-menu-group="config">
+              <button class="portal-menu-parent" type="button" data-portal-menu-toggle="config" aria-expanded="true"><span class="portal-menu-icon" aria-hidden="true">&#9671;</span><span>配置</span><span class="portal-menu-chevron" aria-hidden="true">&#8964;</span></button>
+              <div class="portal-subnav">
+                <button type="button" data-portal-workspace-button="plan">套餐与额度</button>
+                <button type="button" data-portal-workspace-button="keys">API 密钥</button>
+                <button type="button" data-portal-workspace-button="members">成员权限</button>
+              </div>
+            </div>
+            <div class="portal-menu-group" data-portal-menu-group="logs">
+              <button class="portal-menu-parent" type="button" data-portal-menu-toggle="logs" aria-expanded="true"><span class="portal-menu-icon" aria-hidden="true">&#8801;</span><span>日志</span><span class="portal-menu-chevron" aria-hidden="true">&#8964;</span></button>
+              <div class="portal-subnav">
+                <button type="button" data-portal-section-link="usage">用量流水</button>
+                <button type="button" data-portal-workspace-button="audit">审计日志</button>
+              </div>
+            </div>
+          </nav>
+        </aside>
+
+        <div class="portal-main">
+          <section class="page-heading portal-heading"><div><p class="eyebrow">TENANT PORTAL</p><h1 id="portal-tenant-name">租户门户</h1><p id="portal-role" class="muted"></p></div><div class="portal-heading-actions"><span class="status-pill online">服务正常</span><button id="refresh-portal" class="icon-button" type="button" title="刷新当前数据" aria-label="刷新当前数据">&#8635;</button></div></section>
+          <div id="portal-workspace-overview" data-portal-workspace="overview">
+            <section class="stats-grid">
+              <article class="stat-card"><span class="stat-label">本月请求</span><strong id="portal-requests">--</strong><span class="stat-note">已结算请求</span></article>
+              <article class="stat-card"><span class="stat-label">总 Token</span><strong id="portal-tokens">--</strong><span class="stat-note">输入与输出</span></article>
+              <article class="stat-card"><span class="stat-label">剩余金额</span><strong id="portal-remaining">--</strong><span class="stat-note">本月共享额度</span></article>
+              <article class="stat-card accent"><span class="stat-label">已用金额</span><strong id="portal-amount">--</strong><span class="stat-note">本月已结算</span></article>
+            </section>
+            <section id="portal-usage-panel" class="panel portal-data-panel">
+              <div class="panel-heading portal-section-heading"><div><p class="eyebrow">USAGE &amp; REQUESTS</p><h2>用量流水</h2><p class="section-note">计费、调用状态与请求详情</p></div><span id="usage-count" class="catalog-status">0 条</span></div>
+              <div class="usage-filter-bar" aria-label="用量筛选">
+                <label>状态<select id="usage-status-filter"><option value="">全部状态</option><option value="success">成功</option><option value="failed">失败</option></select></label>
+                <label>模型<select id="usage-model-filter"><option value="">全部模型</option></select></label>
+                <button id="usage-filter-reset" class="secondary compact" type="button">重置筛选</button>
+              </div>
+              <div class="table-wrap"><table class="usage-table"><thead><tr><th>模型</th><th>Token 输入 / 输出</th><th>金额</th><th>耗时</th><th>状态</th><th>时间</th><th>详情</th></tr></thead><tbody id="portal-usage-rows"></tbody></table></div>
+              <div class="pagination"><button id="usage-prev" class="secondary compact" type="button">上一页</button><span id="usage-page" class="muted">第 1 页</span><button id="usage-next" class="secondary compact" type="button">下一页</button></div>
+            </section>
+          </div>
+
+          <section id="portal-plan-panel" class="panel portal-config-panel hidden" data-portal-workspace="plan">
+            <div class="panel-heading portal-section-heading"><div><p class="eyebrow">CONFIGURATION · PLAN &amp; CREDIT</p><h2 id="portal-plan-name">当前套餐</h2><p class="section-note">额度、并发策略与可用模型</p></div><span class="module-badge config">配置项</span></div>
+            <div class="plan-summary-grid">
+              <div><span>每月包含额度</span><strong id="portal-credit-included">--</strong></div>
+              <div><span>已使用</span><strong id="portal-credit-used">--</strong></div>
+              <div><span>最大并发</span><strong id="portal-concurrency">--</strong></div>
+              <div><span>额度策略</span><strong id="portal-overage">--</strong></div>
+            </div>
+            <div class="portal-models"><span class="stat-label">允许使用的模型</span><div id="portal-model-list" class="model-chip-list"></div></div>
+          </section>
+          <section id="portal-key-panel" class="panel portal-config-panel hidden" data-portal-workspace="keys">
+            <div class="panel-heading portal-section-heading"><div><p class="eyebrow">CONFIGURATION · API KEYS</p><h2>API 调用密钥</h2></div><span class="module-badge config">配置项</span></div>
+            <form id="portal-key-form" class="key-form"><input id="portal-key-name" placeholder="用途名称，例如：生产环境后端" maxlength="120" required><button class="primary" type="submit">创建 API 密钥</button></form>
+            <p id="portal-key-error" class="error" role="alert"></p>
+            <div class="table-wrap"><table><thead><tr><th>用途名称</th><th>指纹</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="portal-key-rows"></tbody></table></div>
+          </section>
+          <section id="portal-member-panel" class="panel portal-config-panel hidden" data-portal-workspace="members">
+            <div class="panel-heading portal-section-heading"><div><p class="eyebrow">CONFIGURATION · TEAM</p><h2>成员与权限</h2></div><span class="module-badge config">配置项</span></div>
+            <form id="portal-member-form" class="member-form"><input id="portal-member-name" placeholder="姓名" required><input id="portal-member-email" type="email" placeholder="邮箱" required><input id="portal-member-password" type="password" placeholder="初始密码（至少 12 位）" minlength="12" required><select id="portal-member-role"><option value="admin">Admin</option><option value="developer">Developer</option><option value="viewer">Viewer</option></select><button class="primary" type="submit">添加成员</button></form>
+            <p id="portal-member-error" class="error" role="alert"></p>
+            <div class="table-wrap"><table><thead><tr><th>成员</th><th>角色</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead><tbody id="portal-member-rows"></tbody></table></div>
+          </section>
+          <section id="portal-audit-panel" class="panel portal-security-panel hidden" data-portal-workspace="audit"><div class="panel-heading portal-section-heading"><div><p class="eyebrow">SECURITY · AUDIT TRAIL</p><h2>租户审计日志</h2><p class="section-note">租户内的敏感操作与配置变更</p></div><span class="module-badge security">安全记录</span></div><div id="portal-audit-list" class="audit-list compact-audit"></div></section>
+        </div>
+      </div>
     </main>
   </div>
-  <script src="/app.js"></script>
+
+  <dialog id="secret-dialog" class="secret-dialog">
+    <div class="dialog-heading"><div><p class="eyebrow">API KEY</p><h2 id="secret-dialog-title">API 密钥</h2></div><button id="close-secret" class="icon-button" type="button" title="关闭">&times;</button></div>
+    <p id="secret-dialog-note" class="muted"></p>
+    <div class="secret-value"><input id="secret-value" type="password" readonly autocomplete="off" spellcheck="false" aria-label="API 密钥"><button id="toggle-secret" class="icon-button secret-toggle" type="button" title="显示密钥" aria-label="显示密钥">&#128065;</button><button id="copy-secret" class="secondary" type="button">复制</button></div>
+    <p id="copy-status" class="copy-status" aria-live="polite"></p>
+  </dialog>
+  <dialog id="member-password-dialog" class="secret-dialog">
+    <div class="dialog-heading"><div><p class="eyebrow">RESET PASSWORD</p><h2>重置租户成员密码</h2></div><button id="close-member-password" class="icon-button" type="button" title="关闭" aria-label="关闭">&times;</button></div>
+    <p id="member-password-target" class="muted"></p>
+    <form id="member-password-form" class="dialog-form">
+      <label>新密码<input id="member-new-password" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required></label>
+      <label>确认新密码<input id="member-confirm-password" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required></label>
+      <div class="form-actions"><button class="primary" type="submit">确认重置</button><button id="cancel-member-password" class="secondary" type="button">取消</button></div>
+      <p id="member-password-error" class="error" role="alert"></p>
+    </form>
+  </dialog>
+  <dialog id="request-log-dialog" class="request-log-dialog">
+    <div class="dialog-heading"><div><p class="eyebrow">REQUEST DETAIL</p><h2 id="request-log-dialog-title">请求详情</h2></div><button id="close-request-log" class="icon-button" type="button" title="关闭" aria-label="关闭">&times;</button></div>
+    <div id="request-log-dialog-state" class="request-log-state muted">加载中...</div>
+    <div id="request-log-dialog-content" class="hidden">
+      <div id="request-log-summary" class="request-log-summary"></div>
+      <nav class="detail-tabs" aria-label="请求详情"><button class="active" data-log-tab="overview">概览</button><button data-log-tab="request">请求</button><button data-log-tab="response">响应</button><button data-log-tab="routing">路由与错误</button></nav>
+      <section id="request-log-tab-overview" data-log-tab-panel="overview"></section>
+      <section id="request-log-tab-request" class="hidden" data-log-tab-panel="request"></section>
+      <section id="request-log-tab-response" class="hidden" data-log-tab-panel="response"></section>
+      <section id="request-log-tab-routing" class="hidden" data-log-tab-panel="routing"></section>
+    </div>
+  </dialog>
+  <datalist id="model-options"></datalist>
+  <script src="/app.js?v=20260918-6"></script>
 </body>
 </html>

@@ -28,6 +28,21 @@ services:
       retries: 20
     restart: unless-stopped
 
+  postgres-init:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-maas}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-maas_password}
+      BIFROST_CONFIG_PASSWORD: ${BIFROST_CONFIG_PASSWORD:-bifrost_config_password}
+      BIFROST_LOGS_PASSWORD: ${BIFROST_LOGS_PASSWORD:-bifrost_logs_password}
+    volumes:
+      - ./deploy/postgres:/bootstrap:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/bootstrap/compose-bootstrap.sh"]
+    restart: "no"
+
   maas-api:
     build:
       context: .
@@ -42,6 +57,9 @@ services:
       MAAS_ADMIN_USERNAME: ${MAAS_ADMIN_USERNAME:-admin}
       MAAS_ADMIN_PASSWORD: ${MAAS_ADMIN_PASSWORD:-change-me}
       MAAS_CORS_ORIGIN: ${MAAS_CORS_ORIGIN:-http://localhost:3000}
+      MAAS_KEY_ENCRYPTION_KEY: ${MAAS_KEY_ENCRYPTION_KEY:-development-only-maas-key-encryption-material}
+      MAAS_GATEWAY_INTERNAL_URL: "http://maas-gateway:8080"
+      MAAS_INTERNAL_TOKEN: ${MAAS_INTERNAL_TOKEN:-development-only-maas-internal-token}
     depends_on:
       postgres:
         condition: service_healthy
@@ -71,6 +89,64 @@ services:
       retries: 5
     restart: unless-stopped
 
+  maas-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+      additional_contexts:
+        bifrost: ../bifrost
+      args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOSUMDB: ${GOSUMDB:-sum.golang.org}
+    environment:
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "8080"
+      APP_DIR: "/app/data"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_STYLE: ${LOG_STYLE:-json}
+      BIFROST_CONFIG_PASSWORD: ${BIFROST_CONFIG_PASSWORD:-bifrost_config_password}
+      BIFROST_LOGS_PASSWORD: ${BIFROST_LOGS_PASSWORD:-bifrost_logs_password}
+      BIFROST_ENCRYPTION_KEY: ${BIFROST_ENCRYPTION_KEY:-change-me-bifrost-encryption-key}
+      BIFROST_SETUP_TOKEN: ${BIFROST_SETUP_TOKEN:-change-me-bifrost-setup-token}
+      MAAS_DATABASE_URL: "host=postgres port=5432 user=${POSTGRES_USER:-maas} password=${POSTGRES_PASSWORD:-maas_password} dbname=${POSTGRES_DB:-maas} sslmode=disable"
+      MAAS_REDIS_ADDR: "redis:6379"
+      MAAS_KV_REDIS_ADDR: "${MAAS_KV_REDIS_ADDR:-redis:6379}"
+      MAAS_KV_REDIS_OP_TIMEOUT: "${MAAS_KV_REDIS_OP_TIMEOUT:-2s}"
+      MAAS_KV_REDIS_KEY_PREFIX: "${MAAS_KV_REDIS_KEY_PREFIX:-bifrost:kv:}"
+      MAAS_KEY_ENCRYPTION_KEY: ${MAAS_KEY_ENCRYPTION_KEY:-development-only-maas-key-encryption-material}
+      MAAS_CONFIG_RECONCILE_INTERVAL: ${MAAS_CONFIG_RECONCILE_INTERVAL:-15s}
+      MAAS_USAGE_ENFORCEMENT: ${MAAS_USAGE_ENFORCEMENT:-true}
+      MAAS_CONCURRENCY_LEASE_TTL: ${MAAS_CONCURRENCY_LEASE_TTL:-5m}
+      MAAS_PROVIDER_MAX_CONCURRENT: ${MAAS_PROVIDER_MAX_CONCURRENT:-0}
+      MAAS_BILLING_MARKUP_BPS: ${MAAS_BILLING_MARKUP_BPS:-1000}
+      MAAS_RUN_DATA_MIGRATIONS: "true"
+      MAAS_GUARDRAIL_BLOCKED_TERMS: ${MAAS_GUARDRAIL_BLOCKED_TERMS:-}
+      MAAS_INTERNAL_TOKEN: ${MAAS_INTERNAL_TOKEN:-development-only-maas-internal-token}
+    volumes:
+      - maas_bifrost_data:/app/data
+      - ./deploy/bifrost/config.json:/app/data/config.json:ro
+    depends_on:
+      postgres-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      maas-api:
+        condition: service_healthy
+    ports:
+      - "${MAAS_BIND_HOST:-127.0.0.1}:${MAAS_GATEWAY_PORT:-18081}:8080"
+    healthcheck:
+      test: ["CMD", "/app/maas-gateway", "--healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    restart: unless-stopped
+
 volumes:
   maas_postgres_data:
   maas_redis_data:
+  maas_bifrost_data:

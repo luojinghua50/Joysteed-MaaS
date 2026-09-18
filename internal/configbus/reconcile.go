@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/luojinghua50/Joysteed-MaaS/internal/tenant"
+	tenant "github.com/luojinghua50/Joysteed-MaaS/internal/tenantid"
 )
 
 // GenerationSource is deliberately smaller than Store so a node can reconcile

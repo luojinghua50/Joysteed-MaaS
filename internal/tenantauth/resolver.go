@@ -97,9 +97,14 @@ func (r *Resolver) ResolveVirtualKey(ctx context.Context, value string) (tenant.
 	if err != nil {
 		return "", fmt.Errorf("tenantauth: resolve credential: %w", err)
 	}
-	if key.ID == "" || (key.IsActive != nil && !*key.IsActive) ||
-		(key.ExpiresAt != nil && !now.Before(*key.ExpiresAt)) {
-		return "", ErrInvalidVirtualKey
+	if key.ID == "" {
+		return "", fmt.Errorf("%w: lookup returned no key identity", ErrInvalidVirtualKey)
+	}
+	if key.IsActive != nil && !*key.IsActive {
+		return "", fmt.Errorf("%w: key is inactive", ErrInvalidVirtualKey)
+	}
+	if key.ExpiresAt != nil && !now.Before(*key.ExpiresAt) {
+		return "", fmt.Errorf("%w: key is expired", ErrInvalidVirtualKey)
 	}
 	if key.TenantID == "" {
 		return "", ErrUnattributedKey

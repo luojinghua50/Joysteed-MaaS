@@ -1,0 +1,51 @@
+FROM node:25-alpine3.23 AS bifrost-ui
+
+WORKDIR /src
+COPY --from=bifrost ui/package*.json ./
+RUN npm ci
+COPY --from=bifrost ui/ ./
+RUN npm run build-enterprise
+
+FROM golang:1.27-bookworm AS build
+
+ARG TARGETOS
+ARG TARGETARCH
+ARG GOPROXY=https://proxy.golang.org,direct
+ARG GOSUMDB=sum.golang.org
+ARG VERSION=dev
+
+ENV GOPROXY=${GOPROXY}
+ENV GOSUMDB=${GOSUMDB}
+ENV CGO_ENABLED=0
+
+WORKDIR /src
+COPY --from=bifrost core ./bifrost/core
+COPY --from=bifrost framework ./bifrost/framework
+COPY --from=bifrost plugins/governance ./bifrost/plugins/governance
+COPY --from=bifrost transports ./bifrost/transports
+COPY go.mod go.sum ./maas/
+COPY cmd ./maas/cmd
+COPY internal ./maas/internal
+COPY plugins ./maas/plugins
+COPY --from=bifrost-ui /src/out ./maas/cmd/maas-gateway/ui
+
+WORKDIR /src/maas
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath \
+    -ldflags="-s -w -X main.version=${VERSION}" -o /out/maas-gateway ./cmd/maas-gateway
+
+FROM alpine:3.22
+
+RUN addgroup -S maas && adduser -S -G maas -h /app maas \
+    && mkdir -p /app/data && chown -R maas:maas /app
+
+COPY --from=build /out/maas-gateway /app/maas-gateway
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY LICENSE /licenses/maas/LICENSE
+COPY licenses/bifrost/LICENSE /licenses/bifrost/LICENSE
+COPY licenses/bifrost/THIRD_PARTY_NOTICES.md /licenses/bifrost/THIRD_PARTY_NOTICES.md
+
+WORKDIR /app
+EXPOSE 8080
+USER maas
+ENTRYPOINT ["/app/maas-gateway"]

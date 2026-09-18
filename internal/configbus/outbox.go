@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/luojinghua50/Joysteed-MaaS/internal/tenant"
+	tenant "github.com/luojinghua50/Joysteed-MaaS/internal/tenantid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -154,7 +154,9 @@ func (s *Store) PublishTx(tx *gorm.DB, id tenant.ID, entity string) (*Change, er
 	if err := tx.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "tenant_id"}},
 		DoUpdates: clause.Assignments(map[string]interface{}{
-			"generation": gorm.Expr("generation + 1"),
+			// PostgreSQL sees both the target and EXCLUDED row inside an upsert;
+			// qualify the target column so the increment is not ambiguous.
+			"generation": gorm.Expr(GenerationTable + ".generation + 1"),
 			"updated_at": now,
 		}),
 	}, clause.Returning{Columns: []clause.Column{{Name: "generation"}}}).Create(row).Error; err != nil {

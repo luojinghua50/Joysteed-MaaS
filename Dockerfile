@@ -17,7 +17,8 @@ COPY internal ./internal
 RUN go mod edit \
     -dropreplace=github.com/maximhq/bifrost/core \
     -dropreplace=github.com/maximhq/bifrost/framework \
-    -dropreplace=github.com/maximhq/bifrost/plugins/governance
+    -dropreplace=github.com/maximhq/bifrost/plugins/governance \
+    -dropreplace=github.com/maximhq/bifrost/transports
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -ldflags='-s -w' -o /out/maas-api ./cmd/maas-api
 

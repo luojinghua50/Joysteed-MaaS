@@ -16,7 +16,11 @@ import (
 // ErrTenantNotFound is returned instead of gorm.ErrRecordNotFound so callers do
 // not have to import gorm to tell "no such tenant" from a database failure. That
 // distinction decides whether a request is rejected or retried.
-var ErrTenantNotFound = errors.New("controlplane: tenant not found")
+var (
+	ErrTenantNotFound     = errors.New("controlplane: tenant not found")
+	ErrTenantSlugRequired = errors.New("controlplane: tenant slug is required")
+	ErrTenantSlugConflict = errors.New("controlplane: tenant slug is already in use")
+)
 
 // ErrTrialNeedsEndDate reports an attempt to enter StatusTrial through
 // Transition, which cannot carry the end date. Use StartTrial.
@@ -99,8 +103,8 @@ func (s *Store) Create(ctx context.Context, id tenant.ID, slug, name string) (*T
 	if id == "" {
 		return nil, errors.New("controlplane: tenant id is required")
 	}
-	if slug == "" {
-		return nil, errors.New("controlplane: tenant slug is required")
+	if strings.TrimSpace(slug) == "" {
+		return nil, ErrTenantSlugRequired
 	}
 	var out *Tenant
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -121,8 +125,10 @@ func (s *Store) CreateTx(tx *gorm.DB, id tenant.ID, slug, name string) (*Tenant,
 	if id == "" {
 		return nil, errors.New("controlplane: tenant id is required")
 	}
+	slug = strings.TrimSpace(slug)
+	name = strings.TrimSpace(name)
 	if slug == "" {
-		return nil, errors.New("controlplane: tenant slug is required")
+		return nil, ErrTenantSlugRequired
 	}
 	now := time.Now().UTC()
 	t := &Tenant{ID: id, Slug: slug, Name: name, Status: StatusRegistered, StatusChangedAt: now}
@@ -143,6 +149,50 @@ func (s *Store) Get(ctx context.Context, id tenant.ID) (*Tenant, error) {
 		return nil, fmt.Errorf("controlplane: get tenant %s: %w", id, err)
 	}
 	return &t, nil
+}
+
+// GetTx reads and locks a tenant in a caller-owned transaction.
+func (s *Store) GetTx(tx *gorm.DB, id tenant.ID) (*Tenant, error) {
+	if tx == nil {
+		return nil, errors.New("controlplane: transaction is required")
+	}
+	return lockTenant(tx, id)
+}
+
+// UpdateProfileTx changes the human-facing tenant name and login slug while
+// keeping the immutable tenant ID and lifecycle state intact.
+func (s *Store) UpdateProfileTx(tx *gorm.DB, id tenant.ID, slug, name string) (*Tenant, error) {
+	if tx == nil {
+		return nil, errors.New("controlplane: transaction is required")
+	}
+	slug = strings.TrimSpace(slug)
+	name = strings.TrimSpace(name)
+	if slug == "" {
+		return nil, ErrTenantSlugRequired
+	}
+	t, err := lockTenant(tx, id)
+	if err != nil {
+		return nil, err
+	}
+	var conflicts int64
+	if err := tx.Model(&Tenant{}).Where("LOWER(slug) = LOWER(?) AND id <> ?", slug, string(id)).Count(&conflicts).Error; err != nil {
+		return nil, fmt.Errorf("controlplane: check tenant slug %q: %w", slug, err)
+	}
+	if conflicts != 0 {
+		return nil, ErrTenantSlugConflict
+	}
+	now := time.Now().UTC()
+	if err := tx.Model(&Tenant{}).Where("id = ?", string(id)).Updates(map[string]any{
+		"slug":       slug,
+		"name":       name,
+		"updated_at": now,
+	}).Error; err != nil {
+		return nil, fmt.Errorf("controlplane: update tenant %s: %w", id, err)
+	}
+	t.Slug = slug
+	t.Name = name
+	t.UpdatedAt = now
+	return t, nil
 }
 
 // List returns tenants for platform administration. Tenant-facing handlers
@@ -168,6 +218,24 @@ func (s *Store) List(ctx context.Context, limit int) ([]Tenant, error) {
 // UPDATE serialises the pair, so each caller validates against the status its
 // own write will actually follow.
 func (s *Store) Transition(ctx context.Context, id tenant.ID, to Status) (*Tenant, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("controlplane: database is required")
+	}
+	var out *Tenant
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var err error
+		out, err = s.TransitionTx(tx, id, to)
+		return err
+	})
+	return out, err
+}
+
+// TransitionTx moves a tenant inside a caller-owned transaction so the state
+// change can commit atomically with its control-plane audit event.
+func (s *Store) TransitionTx(tx *gorm.DB, id tenant.ID, to Status) (*Tenant, error) {
+	if tx == nil {
+		return nil, errors.New("controlplane: transaction is required")
+	}
 	if to == StatusTrial {
 		// Structural, not a validation nicety: this signature has nowhere to put
 		// TrialEndsAt, so allowing it here would be the one way to produce a
@@ -176,38 +244,30 @@ func (s *Store) Transition(ctx context.Context, id tenant.ID, to Status) (*Tenan
 		return nil, ErrTrialNeedsEndDate
 	}
 
-	var out *Tenant
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		t, err := lockTenant(tx, id)
-		if err != nil {
-			return err
-		}
-		if err := CanTransition(t.Status, to); err != nil {
-			return err
-		}
-		now := time.Now().UTC()
-		updates := map[string]any{
-			"status":            string(to),
-			"status_changed_at": now,
-			// Leaving trial clears the end date. A stale TrialEndsAt on an active
-			// tenant is a live tripwire: it reads as "this trial ended", and any
-			// later code that consults the field rather than the status would
-			// stop serving a paying customer.
-			"trial_ends_at": nil,
-		}
-		if err := tx.Model(&Tenant{}).Where("id = ?", string(id)).Updates(updates).Error; err != nil {
-			return fmt.Errorf("controlplane: transition tenant %s to %s: %w", id, to, err)
-		}
-		t.Status = to
-		t.StatusChangedAt = now
-		t.TrialEndsAt = nil
-		out = t
-		return nil
-	})
+	t, err := lockTenant(tx, id)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	if err := CanTransition(t.Status, to); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	updates := map[string]any{
+		"status":            string(to),
+		"status_changed_at": now,
+		// Leaving trial clears the end date. A stale TrialEndsAt on an active
+		// tenant is a live tripwire: it reads as "this trial ended", and any
+		// later code that consults the field rather than the status would
+		// stop serving a paying customer.
+		"trial_ends_at": nil,
+	}
+	if err := tx.Model(&Tenant{}).Where("id = ?", string(id)).Updates(updates).Error; err != nil {
+		return nil, fmt.Errorf("controlplane: transition tenant %s to %s: %w", id, to, err)
+	}
+	t.Status = to
+	t.StatusChangedAt = now
+	t.TrialEndsAt = nil
+	return t, nil
 }
 
 // StartTrial moves a tenant into StatusTrial with its end date, in one write.

@@ -1,245 +1,387 @@
-# MaaS — 基于 Bifrost 的企业级多租户平台
+# MaaS：基于 Bifrost 的企业级多租户平台
 
-在 [Bifrost](https://github.com/maximhq/bifrost)（Apache 2.0）之上构建的商用企业级
-MaaS（Model-as-a-Service）平台：多租户隔离、配额计量、计费结算、管理后台与租户自服务门户。
+[English](README.en.md) | 简体中文
 
-**工程策略：依赖，不 fork。** `core` / `framework` / `plugins` 以 Go module 依赖引入，
-自研能力以 wrapper、overlay、plugin 与迁移原语的形态存在，让上游升级保持廉价。
-唯一例外是数据模型——行级隔离需要给上游表加 `tenant_id` 列，这部分通过上游的
-`framework/migrator` 完成，不改上游源码。
+MaaS（Model-as-a-Service）在 [Bifrost](https://github.com/maximhq/bifrost) 数据面之上提供
+多租户控制面、租户门户、Virtual Key 管理、套餐与计量、审计以及集群级运行时协调。
 
-> **当前状态：可通过 Compose 运行的控制面基础版。**
-> 管理 UI、管理员登录、租户目录、概览与审计查询已经可用；支付网关、生产 moderation、
-> 完整租户自服务门户和逐表数据回填等仍未实现。详见下方[模块完成度](#模块完成度)。
+控制面和领域能力保留在本仓库；Bifrost 通过 plugin、wrapper 和少量通用注入接口接入。
+本地开发使用 Go module `replace` 引用同级的 Bifrost 工作区，完整镜像也从该工作区编译
+Bifrost HTTP Server 与 Dashboard。
 
----
+## 系统组成
 
-## 隔离模型
+| 组件 | 职责 |
+|---|---|
+| `maas-ui` | 平台管理后台与租户自服务门户 |
+| `maas-api` | 登录、租户、成员、套餐、Virtual Key、用量和审计 API |
+| `maas-gateway` | 完整 Bifrost 数据面，加载 MaaS 鉴权、计量、并发控制和 guardrail 插件 |
+| Postgres | MaaS 控制库、Bifrost 配置库、Bifrost 日志库与持久化 session |
+| Redis | 配置通知、共享额度计数、并发租约和 Bifrost 运行时 KV |
 
-租户隔离建立在 **Postgres 行级安全（RLS）** 上，而不是靠应用层记得加 `WHERE tenant_id = ?`。
-选择 RLS 的原因很直接：Bifrost 数据面有约 387 处裸 `s.DB()` 查询，wrapper 拦不住它们，
-而 RLS 在连接层生效，未作用域的查询也会被自动过滤。
+## 分层架构
 
-三条关键机制：
+```mermaid
+flowchart TB
+    subgraph L1["接入层"]
+        direction LR
+        WebUser["平台管理员 / 租户成员"]
+        BifrostAdmin["Bifrost 管理员"]
+        APIClient["OpenAI 兼容客户端 / SDK"]
+    end
 
-- **启动自检**（[internal/rls/preflight.go](internal/rls/preflight.go)）— 方言不是 Postgres、
-  运行角色带 `SUPERUSER` 或 `BYPASSRLS`、表未开 `FORCE ROW LEVEL SECURITY` 时拒绝启动。
-  这些条件下 policy 会静默停止过滤，fail-closed 比 fail-open 重要。
-- **租户绑定**（[internal/tenant/binding.go](internal/tenant/binding.go)）— `RunInTenantTx`
-  用 `set_config('app.tenant_id', ?, true)` 把租户绑到事务上；`set_config` 是函数调用，
-  参数是真参数，而 `SET LOCAL x = ?` 只能靠字符串拼接，那会把租户上下文变成注入点。
-- **平台模式**（`RunAsPlatform` / `RunAcrossTenants`）— 严格 policy 下未绑定租户的事务在租户表上
-  读到**零行**，而上游 `GetGovernanceConfig` 恰好做无绑定多表读取。显式的
-  `app.platform_mode` 会话变量是这条逃生通道。它防的是"忘记绑定"，不防"凭据被盗"——
-  应用角色自己就能设这个变量，这是已知且已接受的边界。
+    subgraph L2["界面与网关层"]
+        direction LR
+        UI["maas-ui<br/>Admin + Portal"]
+        API["maas-api<br/>控制面 HTTP API"]
+        Gateway["maas-gateway<br/>Bifrost HTTP Server + Dashboard"]
+    end
 
-**部署硬前提**：`config_store` 与 `logs_store` 都必须是 Postgres。上游两个 store 原生支持
-Postgres，配置即可，但 SQLite 是默认值——不显式配就没有 RLS，隔离方案在其他后端上根本不存在。
-另外 Postgres 也打开了物化视图这条不受 RLS 约束的读取路径，需要把 logs_store 的
-`matview_refresh_interval` 设为 `off`。
+    subgraph L3["控制面服务层"]
+        direction LR
+        Identity["身份与权限<br/>Session / RBAC / CSRF"]
+        Tenant["租户与成员<br/>Tenant / Member"]
+        Config["密钥与配置<br/>Virtual Key / Outbox / Projection"]
+        Commerce["商业与治理<br/>Plan / SKU / Billing / Audit"]
+    end
 
----
+    subgraph L4["数据面执行层"]
+        direction LR
+        TenantAuth["tenantauth<br/>租户解析与鉴权"]
+        ModelAccess["modelaccess<br/>模型白名单"]
+        TenantUsage["tenantusage<br/>额度 / 并发 / 计量"]
+        Guardrails["guardrails<br/>输入 / 输出 / 流式检查"]
+        BifrostCore["Bifrost Core<br/>路由 / 重试 / Provider 调用"]
+    end
+
+    subgraph L5["基础设施与外部依赖层"]
+        direction LR
+        ControlDB[("MaaS Control DB<br/>租户 / 账本 / 审计 / Session")]
+        ConfigDB[("Bifrost Config DB<br/>Provider / Key / Governance")]
+        LogsDB[("Bifrost Logs DB<br/>请求与响应日志")]
+        Redis[("Redis<br/>通知 / 计数 / 租约 / Runtime KV")]
+        Providers["模型 Provider<br/>OpenAI / Anthropic / Gemini / ..."]
+    end
+
+    WebUser --> UI --> API
+    BifrostAdmin --> Gateway
+    APIClient --> Gateway
+
+    API --> Identity
+    API --> Tenant
+    API --> Config
+    API --> Commerce
+
+    Gateway --> TenantAuth
+    TenantAuth --> TenantUsage
+    TenantUsage --> Guardrails
+    Guardrails --> BifrostCore --> Providers
+    Gateway --> ModelAccess
+    ModelAccess -->|模型目录过滤| BifrostCore
+
+    Identity --> ControlDB
+    Tenant --> ControlDB
+    Commerce --> ControlDB
+    Config --> ControlDB
+    Config --> ConfigDB
+    Config -.->|outbox 通知与配置投影| Gateway
+
+    API -->|内部模型目录与日志查询| Gateway
+    Gateway --> ConfigDB
+    Gateway --> LogsDB
+    Gateway --> Redis
+    TenantUsage --> ControlDB
+    TenantUsage --> Redis
+```
+
+实线表示同步请求或持久化调用，虚线表示配置变更通过 outbox、Redis 通知和 generation 对账
+投影到数据面。Gateway 启动时安装 Redis `RuntimeKVStore`，因此 Bifrost Core、routing、batch、
+Gemini upload 和 realtime transport 共享同一套跨节点状态。
+
+## 核心能力
+
+- Postgres RLS 租户隔离、启动前置检查和显式平台事务模式。
+- 平台管理员与租户成员两套身份边界，租户内置
+  `owner`、`admin`、`developer`、`viewer` 角色。
+- Virtual Key 加密存储、生命周期管理、transactional outbox 和 Bifrost 幂等投影。
+- 套餐、模型白名单、SKU 定价、共享 USD 额度、Provider attempt 计量和账本关联。
+- Redis 租约 semaphore，实现租户与 Provider 两级并发准入。
+- Redis 版 Bifrost `RuntimeKVStore`，覆盖会话粘性、跨节点协调、一次性 transport 状态和
+  类型 decoder 恢复。
+- 追加式审计、敏感字段递归脱敏、租户范围的请求日志与用量详情。
+- 输入、输出和流式 chunk 的 fail-closed guardrail hook。
+
+## 界面预览
+
+### MaaS 管理后台
+
+租户目录、生命周期与租户资源入口：
+
+[![MaaS 管理后台：租户管理](docs/image/admin_tenant.png)](docs/image/admin_tenant.png)
+
+套餐、共享额度、模型白名单与模型成本定价：
+
+[![MaaS 管理后台：套餐与模型成本定价](docs/image/admin_model_cost.png)](docs/image/admin_model_cost.png)
+
+### MaaS Gateway
+
+Provider、模型与上游 API Key 配置：
+
+[![MaaS Gateway：模型 Provider 配置](docs/image/gateway_model.png)](docs/image/gateway_model.png)
+
+### MaaS 租户门户
+
+租户套餐、共享额度、并发策略与可用模型：
+
+[![MaaS 租户门户：套餐额度与可用模型](docs/image/portal_model_cost.png)](docs/image/portal_model_cost.png)
+
+租户成员与角色权限管理：
+
+[![MaaS 租户门户：成员与权限](docs/image/portal_rbac.png)](docs/image/portal_rbac.png)
+
+用量、Token、费用和请求详情：
+
+[![MaaS 租户门户：用量与费用](docs/image/portal_cost.png)](docs/image/portal_cost.png)
 
 ## 代码结构
 
-```
-cmd/maas-api/          控制面 HTTP 服务入口
+```text
+cmd/
+  maas-api/             控制面 HTTP 服务
+  maas-gateway/         集成 MaaS 的 Bifrost HTTP Server
 internal/
-  rls/                 RLS 启动自检（方言、角色、FORCE、policy 覆盖）
-  tenant/              租户 ID、上下文、事务绑定、KeyScopeFor、TenantScopedStore 接缝
-  migrate/             迁移原语：加列、三种 RLS policy、复合外键、租户前导索引、sessions 改造
-  controlplane/        租户注册表与生命周期状态机
-  governance/          嵌入上游 GovernanceStore 的 wrapper（租户限额叠加而非替换）
-  tenantauth/          虚拟 key → 租户的解析
-  configbus/           generation + 事务性 outbox + Redis pub/sub 通知 + 节点侧 fencing
-  quota/               Redis 原子 INCRBY 共享计数器（D13 中间档，非 reservation）
-  billing/             幂等计量、账期、发票、余额、预付费 reservation（整数微单位）
-  rbac/                控制面授权边界：平台/租户角色隔离、不可提权会话、CSRF
-  audit/               追加式审计事件（无 update / delete 接口）
-  portal/              租户自服务门户 service 与默认拒绝路由守卫
-  fairness/            Redis 集群级租约 semaphore（租户 × provider 双上限）
-  rediskv/             Redis 版 schemas.KVStore
-  pglock/              共享 catalog 行 DDL 的 advisory lock
-  httpapi/             控制面 API 与迁移装配
-  rlsspike/            Phase 0 的 RLS 验证与基准（实测依据）
+  authn/                Postgres session 与凭据摘要
+  audit/                追加式审计事件
+  billing/              SKU、套餐、计量、账期与账本
+  bifrostprojection/    MaaS 配置到 Bifrost 的投影
+  configbus/            generation、outbox、通知与对账
+  controlplane/         租户注册表与生命周期
+  fairness/             Redis 集群级并发租约
+  httpapi/              Admin 与 Portal API
+  member/               租户成员与系统角色
+  migrate/              RLS、复合外键和索引迁移原语
+  rediskv/              Bifrost Redis RuntimeKVStore
+  requestlog/           租户范围请求日志模型
+  rls/                  RLS 启动检查
+  tenant/               租户事务绑定与 scoped store
+  virtualkey/           Virtual Key 真相源与投影状态机
 plugins/
-  tenantauth/          HTTPTransportPreAuthHook：请求入口解析租户
-  guardrails/          fail-closed 内容策略 hook（输入/输出/流式 chunk）
-maas-ui/               控制面前端（静态资源 + nginx）
-deploy/postgres/       首次启动前的角色与库 bootstrap
-docs/                  技术方案与 56 张表的租户归属审计
+  guardrails/           内容策略 hook
+  tenantauth/           Virtual Key 到租户的请求鉴权
+  tenantusage/          额度、并发准入和用量结算
+maas-ui/                管理后台与租户门户前端
+deploy/bifrost/         Bifrost Postgres store 配置
+deploy/postgres/        数据库与运行角色初始化
+docs/                   技术设计与数据表归属审计
 ```
-
----
 
 ## 快速开始
 
 ### 前置条件
 
 - Go 1.27+
-- Docker / Docker Compose
-- 完整源码测试仍需要 Bifrost 检出与本仓库同级，因为 `go.mod` 的本地开发 `replace`
-  指向 `../bifrost/{core,framework,plugins/governance}`：
+- Docker 与 Docker Compose
+- Redis 6.2+；Redis 运行时 KV 使用原子 `GETDEL`，Compose 默认使用 Redis 7
+- 与本仓库同级的 Bifrost 源码工作区
 
-  ```
-  workspaces/ai/gateway/
-  ├── bifrost/     # git clone https://github.com/maximhq/bifrost
-  └── maas/        # 本仓库
-  ```
+```text
+workspaces/ai/gateway/
+├── bifrost/
+└── maas/
+```
 
-  Compose 的 `maas-api` 已与数据面依赖解耦，构建和启动控制面不需要 sibling Bifrost 源码。
+`go.mod` 的本地 `replace` 和 `Dockerfile.gateway` 都使用 `../bifrost`。单独构建 `maas-api`
+不需要 Bifrost 源码，完整 Gateway 构建需要该目录。
 
-### Compose 启动
+### 启动完整栈
 
-建议先创建环境配置并替换密码：
+创建部署配置，并替换其中的全部凭据：
 
 ```bash
 cp .env.example .env
-```
-
-在本仓库目录下启动：
-
-```bash
 docker compose up -d --build
 ```
 
-起来之后：控制台 http://localhost:3000 ，API http://localhost:18080/healthz 。
-默认账号 `admin` / `change-me`。
+查看状态和日志：
 
 ```bash
 docker compose ps
-docker compose logs -f maas-api maas-ui
+docker compose logs -f maas-api maas-ui maas-gateway
 ```
 
-### 本地开发
+| 入口 | 默认地址 |
+|---|---|
+| 平台管理后台 | http://localhost:3000/admin |
+| 租户门户 | http://localhost:3000/portal |
+| MaaS API 健康检查 | http://localhost:18080/healthz |
+| Bifrost Gateway 与 Dashboard | http://localhost:18081 |
+| Gateway 健康检查 | http://localhost:18081/health |
+
+平台管理员使用 `.env` 中的 `MAAS_ADMIN_USERNAME` 和 `MAAS_ADMIN_PASSWORD` 登录。
+首次打开 Bifrost Dashboard 时，在 `Workspace -> Config -> Security` 使用
+`BIFROST_SETUP_TOKEN` 创建独立的 Bifrost 管理员。两个管理员属于不同安全边界。
+
+配置 Provider 和模型后，可使用 MaaS/Bifrost Virtual Key 调用 OpenAI 兼容端点：
 
 ```bash
-go build ./...
-go test ./...
+curl http://localhost:18081/v1/chat/completions \
+  -H 'Authorization: Bearer <virtual-key>' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"ping"}]}'
 ```
 
-部分测试需要真实的 Postgres 和 Redis——RLS 的行为不可能用 SQLite 或内存 fake 验证，
-那样测的就不是被依赖的那个性质了。先起这两个一次性容器：
+### 受限网络构建
+
+只有在默认 Go module proxy 不可用时才覆盖代理：
 
 ```bash
-docker run -d --name maas-rls-spike \
-  -e POSTGRES_PASSWORD=spike_password -e POSTGRES_USER=spike \
-  -e POSTGRES_DB=spike -p 55432:5432 postgres:16-alpine
-
-docker run -d --name maas-kv-redis -p 56379:6379 redis:7-alpine
+GOPROXY=https://goproxy.cn,direct GOSUMDB=off docker compose up -d --build
 ```
 
-| 依赖 | 涉及包 | 覆盖端点的环境变量 |
-|---|---|---|
-| Postgres :55432 | `internal/{rls,tenant,migrate,controlplane,rlsspike}` | `MAAS_SPIKE_PG_{HOST,PORT,USER,PASSWORD,DB}` |
-| Redis :56379 | `internal/rediskv` | `MAAS_KV_REDIS_ADDR` |
-| 无（SQLite / 纯逻辑） | `internal/{audit,billing,configbus,rbac,quota,fairness,portal,governance}`、`plugins/*` | — |
-
-清理：`docker rm -f maas-rls-spike maas-kv-redis`
-
----
+`GOSUMDB=off` 会关闭 checksum database 校验，只适合受控开发网络。生产构建应保留校验或使用
+可信的内部模块代理。
 
 ## 配置
 
-`cmd/maas-api` 读取的环境变量：
+[`.env.example`](.env.example) 是 Compose 部署的配置入口。以下变量需要在部署前重点确认。
 
-| 变量 | 默认值 | 说明 |
+### 凭据与端口
+
+| 变量 | 用途 |
+|---|---|
+| `POSTGRES_PASSWORD` | MaaS 控制库管理员密码 |
+| `BIFROST_CONFIG_PASSWORD` | Bifrost 配置库运行角色密码 |
+| `BIFROST_LOGS_PASSWORD` | Bifrost 日志库运行角色密码 |
+| `BIFROST_ENCRYPTION_KEY` | Bifrost 持久化敏感配置加密密钥 |
+| `BIFROST_SETUP_TOKEN` | 首次创建 Bifrost 管理员的 setup token |
+| `MAAS_ADMIN_USERNAME` / `MAAS_ADMIN_PASSWORD` | MaaS 平台管理员凭据 |
+| `MAAS_KEY_ENCRYPTION_KEY` | MaaS Virtual Key 的 AES-GCM 主密钥，必须固定并备份 |
+| `MAAS_INTERNAL_TOKEN` | MaaS API 与 Gateway 内部接口鉴权令牌 |
+| `MAAS_BIND_HOST` | 对外绑定地址，默认 `127.0.0.1` |
+| `MAAS_UI_PORT` / `MAAS_API_PORT` / `MAAS_GATEWAY_PORT` | Compose 主机端口 |
+
+### 网关策略
+
+| 变量 | 默认值 | 用途 |
 |---|---|---|
-| `MAAS_HTTP_ADDR` | `:8080` | 监听地址 |
-| `MAAS_DATABASE_URL` | `host=postgres ... dbname=maas` | 控制面 Postgres DSN |
-| `MAAS_REDIS_ADDR` | `redis:6379` | 置空则不连 Redis |
-| `MAAS_REDIS_PASSWORD` | — | |
-| `MAAS_ADMIN_USERNAME` | `admin` | 平台管理员 |
-| `MAAS_ADMIN_PASSWORD` | `change-me` | **生产环境必须覆盖** |
-| `MAAS_SESSION_LIFETIME` | `12h` | Go duration 格式 |
-| `MAAS_CORS_ORIGIN` | `http://localhost:3000` | 控制台来源 |
+| `MAAS_CONFIG_RECONCILE_INTERVAL` | `15s` | 配置 generation 对账周期 |
+| `MAAS_USAGE_ENFORCEMENT` | `true` | 启用额度、并发准入与用量结算 |
+| `MAAS_CONCURRENCY_LEASE_TTL` | `5m` | 并发租约故障回收时间 |
+| `MAAS_PROVIDER_MAX_CONCURRENT` | `0` | Provider 全局并发上限，`0` 表示不限制 |
+| `MAAS_BILLING_MARKUP_BPS` | `1000` | 平台池成本加价基点，`1000` 表示 10% |
+| `MAAS_GUARDRAIL_BLOCKED_TERMS` | 空 | 逗号分隔的本地阻断词基线 |
 
-生产部署前先跑 [deploy/postgres/01_bootstrap.sql](deploy/postgres/01_bootstrap.sql)。
-它创建 Bifrost 首次启动前必须存在的库与角色，且**故意不建表**——上游 43 张表的 schema
-由 GORM struct tag 在运行时生成，手写 DDL 会变成第二份真相源，还会破坏待迁移检测。
-脚本里的 `NOSUPERUSER` / `NOBYPASSRLS` 是承重的，不是卫生习惯。
+### Bifrost 运行时 Redis KV
 
----
+Compose 默认复用内部 `redis:6379`。网关进程支持以下变量：
 
-## 控制面 API
-
-当前 `cmd/maas-api` 暴露的端点：
-
-| 方法 | 路径 | 说明 |
+| 变量 | 默认值 | 用途 |
 |---|---|---|
-| GET | `/healthz`、`/api/health` | 健康检查（容器 healthcheck 用同一入口） |
-| POST | `/api/auth/login` | 平台管理员登录 |
-| GET | `/api/auth/me` | 当前会话身份 |
-| GET | `/api/admin/summary` | 租户 / 审计 / 用量 / Redis 概览 |
-| GET · POST | `/api/admin/tenants` | 租户列表与创建 |
-| GET | `/api/admin/audit` | 审计事件查询 |
+| `MAAS_KV_REDIS_ADDR` | `MAAS_REDIS_ADDR` | Redis 地址 |
+| `MAAS_KV_REDIS_PASSWORD` | `MAAS_REDIS_PASSWORD` | Redis 密码 |
+| `MAAS_KV_REDIS_USERNAME` | 空 | Redis ACL 用户名 |
+| `MAAS_KV_REDIS_DB` | `0` | standalone DB；cluster 模式必须为 `0` |
+| `MAAS_KV_REDIS_USE_TLS` | `false` | 启用 TLS |
+| `MAAS_KV_REDIS_INSECURE_SKIP_VERIFY` | `false` | 跳过 TLS 证书校验，仅用于受控开发环境 |
+| `MAAS_KV_REDIS_CA_CERT_PEM` | 空 | 自定义 CA PEM 内容 |
+| `MAAS_KV_REDIS_CLUSTER_MODE` | `false` | 使用 Redis Cluster 客户端 |
+| `MAAS_KV_REDIS_OP_TIMEOUT` | `2s` | 单次 KV 操作超时 |
+| `MAAS_KV_REDIS_KEY_PREFIX` | `bifrost:kv:` | key 命名空间前缀 |
 
-当前 `/api/admin/*` 已接入服务端会话、RBAC 和写请求 CSRF 校验。`internal/portal`
-提供的租户自服务 service 仍未全部映射为 `/api/portal/*` HTTP 接口。
+默认 Compose 传递 `ADDR`、`OP_TIMEOUT` 和 `KEY_PREFIX`。连接外部 Redis 并使用 ACL/TLS 时，
+需要在 `maas-gateway.environment` 中显式传递对应变量，或在编排平台中直接配置网关环境。
 
----
+## API 概览
 
-## 模块完成度
+除登录端点外，业务写接口都要求有效 session；基于浏览器 session 的写操作同时校验
+CSRF token。
 
-| 模块 | 状态 | 剩余工作 |
+| 范围 | 端点 |
+|---|---|
+| 健康检查 | `GET /healthz`、`GET /api/health` |
+| 平台会话 | `POST /api/auth/login`、`GET /api/auth/me`、`POST /api/auth/logout` |
+| 租户门户会话 | `POST /api/portal/auth/login`、`GET /api/portal/me`、`POST /api/portal/auth/logout` |
+| 平台概览 | `GET /api/admin/summary` |
+| 租户管理 | `/api/admin/tenants`、`/api/admin/tenants/{tenant}` |
+| 平台成员管理 | `/api/admin/tenants/{tenant}/members[/{member}]` |
+| 平台 Virtual Key | `/api/admin/tenants/{tenant}/keys[/{key}[/retry]]` |
+| 套餐与定价 | `/api/admin/plans`、`/api/admin/skus`、`/api/admin/tenants/{tenant}/plan` |
+| 模型目录与审计 | `GET /api/admin/models`、`GET /api/admin/audit` |
+| 门户成员与 Key | `/api/portal/members[/{member}]`、`/api/portal/keys[/{key}]`、`/api/portal/keys/{key}/retry`、`/api/portal/keys/{key}/reveal` |
+| 门户套餐与用量 | `GET /api/portal/plan`、`GET /api/portal/usage`、`GET /api/portal/usage/{usage}/detail` |
+| 门户请求日志 | `GET /api/portal/request-logs`、`GET /api/portal/request-logs/{request}` |
+| 门户审计 | `GET /api/portal/audit` |
+
+Virtual Key 以 MaaS 控制库为真相源。创建和撤销与 outbox 在同一事务提交，Gateway 通过通知和
+generation 对账将变更投影到 Bifrost ConfigStore 与治理内存缓存。列表接口只返回密钥指纹；
+已有密钥明文只能由具备 `key.reveal` 权限的租户 Owner 按需读取，并写入审计日志。
+
+## 安全与运行语义
+
+- Bifrost `config_store` 与 `logs_store` 必须使用 Postgres。SQLite 没有本方案依赖的 RLS 语义。
+- 启动检查会拒绝 `SUPERUSER`、`BYPASSRLS`、未启用 `FORCE ROW LEVEL SECURITY` 或 policy
+  覆盖不完整的运行角色和表。
+- `deploy/bifrost/config.json` 将日志物化视图刷新设为 `off`。Postgres 物化视图不继承底表
+  RLS，不能作为租户隔离读取路径。
+- 数据迁移角色与运行角色应分离。应用凭据泄漏不属于 RLS 能防御的威胁模型。
+- MaaS 额度准入采用“请求前按已结算金额检查、请求后按实际成本扣减”的有界超支语义，
+  不应作为零超支的预付费硬额度对外承诺。
+- Redis 是网关运行依赖。Runtime KV 构造时执行 `PING`，连接失败会阻止 Gateway 启动，避免
+  多节点会话和一次性状态静默退化为进程内状态。
+- 开发配置中的所有默认凭据和示例密钥都必须在暴露服务前替换。
+
+## 本地开发与测试
+
+基础检查：
+
+```bash
+go build ./...
+go vet ./...
+go test ./...
+```
+
+RLS 和 Redis KV 测试依赖真实的 Postgres 与 Redis：
+
+```bash
+docker run -d --name maas-rls-spike \
+  -e POSTGRES_PASSWORD=spike_password \
+  -e POSTGRES_USER=spike \
+  -e POSTGRES_DB=spike \
+  -p 55432:5432 postgres:16-alpine
+
+docker run -d --name maas-kv-redis \
+  -p 56379:6379 redis:7-alpine
+```
+
+| 依赖 | 默认测试地址 | 覆盖变量 |
 |---|---|---|
-| Phase 0 三项验证 | ✅ | — |
-| Redis `schemas.KVStore` | ✅ | — |
-| M1 租户底座 | 🚧 | 逐表回填（需真实数据与产品规则）、`TenantScopedStore` 全接口接线 |
-| M2 配置下发总线 | 🚧 | 接入具体配置 reload、对账 runner、部署告警 |
-| M3 强额度计数器 | 🚧 | 完整 reservation（留给 M6） |
-| M4 管理面 RBAC | 🚧 | Compose 管理员会话已接入；仍需持久化 session、租户用户与生产角色管理 |
-| M5 审计日志 | 🚧 | DB 角色权限、归档 / WORM |
-| M6 计费与结算 | 🚧 | 支付网关、税务发票、催缴与争议流程 |
-| M7 套餐与配额 | 🚧 | 套餐准入、阶梯价格、降级策略 |
-| M8 内容安全 | 🚧 | 生产 moderation、PII 规则、备案与测评 |
-| M9 自服务门户 | 🚧 | 平台管理 UI 已可用；仍需租户门户、成员 / key / model 管理 API |
-| M10 多租户公平性 | 🚧 | 优先级队列、BYOK 分流、transport 接线 |
+| Postgres | `localhost:55432` | `MAAS_SPIKE_PG_HOST`、`MAAS_SPIKE_PG_PORT`、`MAAS_SPIKE_PG_USER`、`MAAS_SPIKE_PG_PASSWORD`、`MAAS_SPIKE_PG_DB` |
+| Redis | `localhost:56379` | `MAAS_KV_REDIS_ADDR` |
 
-没有对应运行时或 UI 的部分不虚标为完成。
+Redis KV 并发安全验证：
 
----
+```bash
+go test -race ./internal/rediskv
+```
 
-## 已知边界
+测试结束后可删除一次性容器：
 
-上传前值得先看清楚的几条，都是设计层面的取舍，不是待修的 bug：
+```bash
+docker rm -f maas-rls-spike maas-kv-redis
+```
 
-- **RLS 防不住被盗凭据。** 应用角色是它自己创建的表的 owner，因此 `FORCE ROW LEVEL SECURITY`
-  是强制项；但即便如此，owner 仍能 `ALTER TABLE ... NO FORCE` 或 `DROP POLICY`。隔离在
-  SQL 注入与漏加谓词的场景下成立，在应用凭据泄露的场景下不成立。彻底解决需要把迁移角色与
-  运行角色拆开，而上游每个 store 只暴露一份凭据，代价是两份配置文件加一次
-  migrate-then-restart。已记为缺口。
-- **`internal/quota` 不是 reservation。** 它是请求完成后的原子 `INCRBY`，超支有界但存在。
-  在 reservation 落地前，**不能对外销售零超支的预付费硬额度**。
-- **物化视图不受 RLS 约束**，且无法使之受约束。把 logs_store 的刷新关掉。
-- **默认凭据是 `admin` / `change-me`**，UI 登录框里还预填了它。方便本地起步，生产必须覆盖。
-- 控制面 session 当前保存在单个 `maas-api` 进程内，容器重启后需要重新登录；多副本部署前需改为 Redis session store。
+## 设计文档
 
----
+- [MAAS_TECH_DESIGN.md](docs/MAAS_TECH_DESIGN.md)：架构、模块依赖、实施记录、风险登记与决策日志。
+- [MAAS_TABLE_AUDIT.md](docs/MAAS_TABLE_AUDIT.md)：Bifrost 56 张表的租户归属分类和迁移顺序。
 
-## 文档
-
-- [docs/MAAS_TECH_DESIGN.md](docs/MAAS_TECH_DESIGN.md) — 完整技术方案。第 4 节是模块
-  M1–M10 的依赖顺序，第 7 节是阶段进度与各交付物的实际落地说明，第 8 节风险登记（R 编号），
-  第 9 节决策日志（D 编号）与 RLS 实测结论。
-- [docs/MAAS_TABLE_AUDIT.md](docs/MAAS_TABLE_AUDIT.md) — 上游 56 张表逐表租户归属，A–E 分类，
-  附推荐迁移顺序。哪些表加 `tenant_id` 是产品决策，记在这里，不从 schema 反推。
-
-Go 源码注释按名称与章节号引用这两份文档（如 "MAAS_TECH_DESIGN.md §9.2.3"、"R36"），
-章节号是承重的——重新编号会打断这些引用。
-
----
+源码注释会按章节号引用技术设计文档，调整文档结构时需要同步检查这些引用。
 
 ## 许可
 
-[Apache License 2.0](LICENSE)。本项目基于 Bifrost（同为 Apache License 2.0）构建，
-上游代码以 Go module 依赖引入，未 fork——仓库本身不再分发上游源码。
+[Apache License 2.0](LICENSE)。本项目基于同为 Apache License 2.0 的 Bifrost 构建。
 
-分发编译产物（二进制、Docker 镜像）时，需要一并带上 bifrost 的
-[`LICENSE`](https://github.com/maximhq/bifrost/blob/main/LICENSE) 与
+分发二进制或 Docker 镜像时，需要同时携带 Bifrost 的
+[`LICENSE`](https://github.com/maximhq/bifrost/blob/main/LICENSE) 和
 [`THIRD_PARTY_NOTICES.md`](https://github.com/maximhq/bifrost/blob/main/THIRD_PARTY_NOTICES.md)。
-当前 [Dockerfile](Dockerfile) 已将 MaaS 与 Bifrost 的许可证和第三方通知放入镜像。
-
-
-
-
+镜像构建会将 MaaS 与 Bifrost 的许可和第三方通知一并放入产物。

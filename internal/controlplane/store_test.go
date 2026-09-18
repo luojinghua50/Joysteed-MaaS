@@ -120,6 +120,45 @@ func TestGet_UnknownTenantIsTypedNotGormError(t *testing.T) {
 	require.ErrorIs(t, err, controlplane.ErrTenantNotFound)
 }
 
+func TestUpdateProfileTxChangesSlugAndNameButNotIdentityOrStatus(t *testing.T) {
+	s, db := newStore(t, 2)
+	ctx := context.Background()
+	created, err := s.Create(ctx, "t-profile", "old-login", "Old Name")
+	require.NoError(t, err)
+
+	var updated *controlplane.Tenant
+	require.NoError(t, db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var err error
+		updated, err = s.UpdateProfileTx(tx, created.ID, " new-login ", " New Name ")
+		return err
+	}))
+	require.Equal(t, created.ID, updated.ID)
+	require.Equal(t, "new-login", updated.Slug)
+	require.Equal(t, "New Name", updated.Name)
+	require.Equal(t, controlplane.StatusRegistered, updated.Status)
+	require.Equal(t, created.CreatedAt, updated.CreatedAt)
+
+	reloaded, err := s.Get(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, updated.Slug, reloaded.Slug)
+	require.Equal(t, updated.Name, reloaded.Name)
+}
+
+func TestUpdateProfileTxRejectsDuplicateSlugIgnoringCase(t *testing.T) {
+	s, db := newStore(t, 2)
+	ctx := context.Background()
+	_, err := s.Create(ctx, "t-first", "team-login", "First")
+	require.NoError(t, err)
+	_, err = s.Create(ctx, "t-second", "second-login", "Second")
+	require.NoError(t, err)
+
+	err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		_, updateErr := s.UpdateProfileTx(tx, "t-second", "TEAM-LOGIN", "Second")
+		return updateErr
+	})
+	require.ErrorIs(t, err, controlplane.ErrTenantSlugConflict)
+}
+
 func TestTransition_HappyPath(t *testing.T) {
 	s, _ := newStore(t, 2)
 	ctx := context.Background()

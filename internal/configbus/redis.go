@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/luojinghua50/Joysteed-MaaS/internal/tenant"
+	tenant "github.com/luojinghua50/Joysteed-MaaS/internal/tenantid"
 	"github.com/redis/go-redis/v9"
 )
 
