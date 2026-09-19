@@ -259,6 +259,7 @@ following variables before deployment.
 | Variable | Purpose |
 |---|---|
 | `POSTGRES_PASSWORD` | MaaS control database administrator password |
+| `POSTGRES_PORT` | Postgres port exposed on the host; defaults to `15432` |
 | `BIFROST_CONFIG_PASSWORD` | Bifrost configuration database runtime-role password |
 | `BIFROST_LOGS_PASSWORD` | Bifrost logs database runtime-role password |
 | `BIFROST_ENCRYPTION_KEY` | Encryption key for sensitive Bifrost configuration |

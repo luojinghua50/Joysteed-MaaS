@@ -250,6 +250,7 @@ GOPROXY=https://goproxy.cn,direct GOSUMDB=off docker compose up -d --build
 | 变量 | 用途 |
 |---|---|
 | `POSTGRES_PASSWORD` | MaaS 控制库管理员密码 |
+| `POSTGRES_PORT` | Postgres 暴露到宿主机的端口，默认 `15432` |
 | `BIFROST_CONFIG_PASSWORD` | Bifrost 配置库运行角色密码 |
 | `BIFROST_LOGS_PASSWORD` | Bifrost 日志库运行角色密码 |
 | `BIFROST_ENCRYPTION_KEY` | Bifrost 持久化敏感配置加密密钥 |
